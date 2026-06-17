@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trading Prototype</title>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ════════════════════════════ TOP BAR ════════════════════════════ -->
+  <header id="top-bar">
+    <div class="search-box">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+        <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M11 11l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <input type="text" placeholder="Search stocks" id="search-input" />
+    </div>
+
+    <div class="index-cluster" id="index-cluster">
+      <div class="index-ticker-viewport" id="index-ticker-viewport" tabindex="0" aria-label="Pinned indices ticker">
+        <div class="index-ticker-track" id="index-ticker-track"></div>
+      </div>
+      <button class="indices-menu-btn" id="indices-menu-btn" type="button" aria-label="Open indices list" aria-expanded="false">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="indices-menu hidden" id="indices-menu" role="menu">
+        <div class="indices-menu-head">
+          <div>
+            <div class="indices-menu-title">Market Dock</div>
+            <div class="indices-menu-subtitle">Curate header instruments</div>
+          </div>
+          <div class="scroll-mode-toggle" aria-label="Ticker scroll mode">
+            <button class="scroll-mode-btn active" type="button" id="index-scroll-manual" data-mode="manual">Manual</button>
+            <button class="scroll-mode-btn" type="button" id="index-scroll-auto" data-mode="auto">Auto</button>
+          </div>
+        </div>
+        <div class="indices-menu-body" id="indices-menu-body"></div>
+      </div>
+    </div>
+
+    <div class="options-metrics" id="options-metrics" aria-label="Options market metrics">
+      <div class="om-chip" data-metric="pcr" data-tooltip="Put Call Ratio">
+        <svg class="om-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M5 5h10M5 15h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M7 3l-2 2 2 2M13 13l2 2-2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="om-label">PCR</span>
+        <span class="om-value" id="metric-pcr" data-value="1.25">1.25</span>
+      </div>
+      <div class="om-chip" data-metric="maxPain" data-tooltip="Max Pain: strike with maximum option pain">
+        <svg class="om-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <circle cx="10" cy="10" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="10" cy="10" r="2.2" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M10 1.8v3M10 15.2v3M1.8 10h3M15.2 10h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <span class="om-value" id="metric-max-pain" data-value="23700">23700</span>
+      </div>
+      <div class="om-chip" data-metric="atmIv" data-tooltip="ATM Implied Volatility">
+        <svg class="om-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M2.5 12.2c2.1-5.8 3.9-5.8 5.5 0s3.4 5.8 5.5 0 3.3-5.8 4-2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M3 16h14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".45"/>
+        </svg>
+        <span class="om-label">IV</span>
+        <span class="om-value" id="metric-atm-iv" data-value="16.85">16.85</span>
+      </div>
+      <div class="om-chip is-high" data-metric="ivPercentile" data-tooltip="IV Percentile: 77.00 - Very High">
+        <svg class="om-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M4 13a6 6 0 1 1 12 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M10 13l3.8-4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <circle cx="10" cy="13" r="1.3" fill="currentColor"/>
+        </svg>
+        <span class="om-value" id="metric-iv-percentile" data-value="77">77</span>
+      </div>
+    </div>
+
+    <div class="top-bar-right">
+      <div class="metric-chip">
+        <span class="mc-label">PnL:</span>
+        <span class="mc-value" id="top-pnl">&#8377;0.00</span>
+      </div>
+      <div class="metric-chip">
+        <span class="mc-label">Margin:</span>
+        <span class="mc-value" id="top-margin">&#8377;24.5k</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════ MAIN LAYOUT ═════════════════════════ -->
+  <div id="main-layout">
+
+    <!-- ─────────────── LEFT NAVBAR ─────────────── -->
+    <nav id="navbar">
+      <div class="nav-group">
+        <a class="nav-icon nav-logo" href="#" title="Home">
+          <img src="assets/logo.png" alt="logo" onerror="this.style.display='none';this.parentNode.innerHTML='<span style=&quot;font-size:20px;background:var(--gradient-logo);-webkit-background-clip:text;-webkit-text-fill-color:transparent&quot;>◈</span>'" />
+        </a>
+
+        <!-- Option Chain -->
+        <a class="nav-icon active" href="#" id="nav-option-chain" title="Option Chain">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Grid table representing option chain strikes -->
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <line x1="3" y1="9" x2="21" y2="9"/>
+            <line x1="3" y1="15" x2="21" y2="15"/>
+            <line x1="12" y1="3" x2="12" y2="21"/>
+          </svg>
+          <span class="nav-label">Option Chain</span>
+        </a>
+
+        <!-- Order Book -->
+        <a class="nav-icon" href="#" id="nav-order-book" title="Order Book">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Bid/ask book — two columns of horizontal bars -->
+            <line x1="4" y1="6"  x2="11" y2="6"/>
+            <line x1="4" y1="10" x2="13" y2="10"/>
+            <line x1="4" y1="14" x2="9"  y2="14"/>
+            <line x1="4" y1="18" x2="12" y2="18"/>
+            <line x1="14" y1="6"  x2="20" y2="6"/>
+            <line x1="14" y1="10" x2="18" y2="10"/>
+            <line x1="14" y1="14" x2="20" y2="14"/>
+            <line x1="14" y1="18" x2="17" y2="18"/>
+            <line x1="12.5" y1="3" x2="12.5" y2="21" stroke-dasharray="2 2"/>
+          </svg>
+          <span class="nav-label">Depth</span>
+        </a>
+
+        <!-- Chart Analyzer -->
+        <a class="nav-icon" href="#" id="nav-chart-analyzer" title="Chart Analyzer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Candlestick bars with a trend line overlay -->
+            <polyline points="3 17 7 9 11 13 15 5 21 10" stroke-width="1.8"/>
+            <line x1="6"  y1="7"  x2="6"  y2="20"/>
+            <line x1="4"  y1="7"  x2="8"  y2="7"/>
+            <line x1="4"  y1="20" x2="8"  y2="20"/>
+            <line x1="16" y1="3"  x2="16" y2="16"/>
+            <line x1="14" y1="3"  x2="18" y2="3"/>
+            <line x1="14" y1="16" x2="18" y2="16"/>
+          </svg>
+          <span class="nav-label">Chart Analyzer</span>
+        </a>
+      </div>
+      <div class="nav-group">
+        <a class="nav-icon nav-ai" href="#" title="AI Assistant">
+          <img src="assets/ai-sparkle.png" alt="AI"
+            onerror="this.style.display='none';this.parentNode.innerHTML='<svg width=&quot;20&quot; height=&quot;20&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot;><path d=&quot;M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z&quot; fill=&quot;url(%23ai-grad)&quot;/><defs><linearGradient id=&quot;ai-grad&quot; x1=&quot;0&quot; y1=&quot;0&quot; x2=&quot;1&quot; y2=&quot;1&quot;><stop stop-color=&quot;%2320b080&quot;/><stop offset=&quot;1&quot; stop-color=&quot;%2360a030&quot;/></linearGradient></defs></svg>'" />
+        </a>
+        <a class="nav-icon nav-bell" href="#" title="Notifications">
+          <img src="assets/bell.png" alt="bell"
+            onerror="this.style.display='none';this.parentNode.innerHTML='<svg width=&quot;18&quot; height=&quot;18&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot;><path d=&quot;M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9&quot;/><path d=&quot;M13.73 21a2 2 0 01-3.46 0&quot;/></svg>'" />
+        </a>
+        <a class="nav-icon nav-avatar" href="#" title="Profile">
+          <img src="assets/avatar.png" alt="avatar"
+            onerror="this.style.display='none';this.parentNode.innerHTML='<div style=&quot;width:26px;height:26px;border-radius:50%;background:var(--bg-card-raised);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--text-secondary)&quot;>A</div>'" />
+        </a>
+      </div>
+    </nav>
+
+    <!-- ─────────────── OPTION CHAIN PANEL (left, in-flow) ─────────────── -->
+    <div id="option-chain-panel">
+      <div class="oc-panel-inner">
+        <div class="oc-panel-header">
+          <span class="oc-panel-title">Option Chain</span>
+          <button class="modal-close" id="oc-panel-close">×</button>
+        </div>
+        <div class="oc-expiry-bar">
+          <button class="oc-expiry-btn" id="oc-expiry-select">27 Mar ▾</button>
+          <div style="flex:1"></div>
+          <span class="oc-spot-label">Spot: <strong id="oc-spot-val">—</strong></span>
+        </div>
+        <div class="oc-full-wrap">
+          <table class="oc-full-table">
+            <colgroup>
+              <col style="width:13%">
+              <col style="width:27%">
+              <col style="width:20%">
+              <col style="width:27%">
+              <col style="width:13%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th colspan="2" class="th-section th-calls">CALLS</th>
+                <th class="th-section th-strike-h"></th>
+                <th colspan="2" class="th-section th-puts">PUTS</th>
+              </tr>
+              <tr>
+                <th class="th-sub th-right">OI</th>
+                <th class="th-sub th-right">PRICE / CHG</th>
+                <th class="th-sub th-center">STRIKE</th>
+                <th class="th-sub th-left">PRICE / CHG</th>
+                <th class="th-sub th-left">OI</th>
+              </tr>
+            </thead>
+            <tbody id="oc-full-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────────── DEPTH PANEL (left, in-flow) ─────────────── -->
+    <div id="depth-panel">
+      <div class="depth-inner">
+        <div class="depth-hdr">
+          <span class="depth-title">Market Depth</span>
+          <button class="modal-close" id="depth-close">×</button>
+        </div>
+        <div class="depth-body">
+          <div class="depth-section" id="depth-ce-section">
+            <div class="depth-sec-hdr">
+              <span class="depth-sec-name" id="depth-ce-label">CE</span>
+              <span class="depth-sec-ltp" id="depth-ce-ltp">—</span>
+            </div>
+            <div class="depth-col-hdr">
+              <span>BID QTY</span>
+              <span>PRICE</span>
+              <span>ASK QTY</span>
+            </div>
+            <div class="depth-levels" id="depth-ce-levels">
+              <div class="depth-empty">No data</div>
+            </div>
+          </div>
+          <div class="depth-sep"></div>
+          <div class="depth-section" id="depth-pe-section">
+            <div class="depth-sec-hdr">
+              <span class="depth-sec-name" id="depth-pe-label">PE</span>
+              <span class="depth-sec-ltp" id="depth-pe-ltp">—</span>
+            </div>
+            <div class="depth-col-hdr">
+              <span>BID QTY</span>
+              <span>PRICE</span>
+              <span>ASK QTY</span>
+            </div>
+            <div class="depth-levels" id="depth-pe-levels">
+              <div class="depth-empty">No data</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────────── CONTENT ─────────────── -->
+    <main id="content">
+
+      <!-- ── STOCK SUB-HEADER ── -->
+      <div id="sub-header">
+        <button class="back-btn" title="Back">←</button>
+        <span class="stock-name">NIFTY 50</span>
+        <span class="signals-badge">24 signals</span>
+        <span class="sub-price" id="sub-price">&#8377;28,048.65</span>
+        <span class="sub-change up" id="sub-change">&#9650; 241.25 (0.95%)</span>
+        <span class="exchange-badge">NSE ⓘ</span>
+
+        <div class="sub-header-right">
+          <div class="chart-vis-controls" id="chart-vis-controls">
+            <button class="cv-btn cv-ce active" id="vis-ce" data-chart="ce" title="Toggle CE chart">CE</button>
+            <button class="cv-btn cv-ul active" id="vis-ul" data-chart="underlying" title="Toggle Underlying chart">UL</button>
+            <button class="cv-btn cv-pe active" id="vis-pe" data-chart="pe" title="Toggle PE chart">PE</button>
+          </div>
+          <div class="sub-header-sep"></div>
+          <div class="one-click-wrap" id="one-click-wrap">
+            <span class="one-click-label">One-click</span>
+            <div class="toggle-track" id="one-click-track">
+              <div class="toggle-thumb"></div>
+            </div>
+          </div>
+          <button class="icon-btn" id="sub-menu-btn" title="More options">⋮</button>
+        </div>
+      </div>
+
+      <!-- ── CHART AREA ── -->
+      <div id="chart-area">
+
+        <!-- LEFT CHART (CE) -->
+        <div class="chart-wrapper" id="ce-chart-wrapper">
+          <div class="chart-header">
+            <div class="chart-header-left">
+              <button class="chart-instrument-btn" id="switch-ce-btn">27 Mar 27500 ▾</button>
+              <span class="opt-type-badge ce">CE</span>
+              <span class="chart-price" id="ce-chart-price">350.25</span>
+              <span class="chart-change up" id="ce-chart-change">+12.50 (3.70%)</span>
+            </div>
+            <div class="chart-header-right">
+              <button class="tf-selector" id="ce-tf-btn">5m ▾</button>
+              <button class="icon-btn" id="ce-menu-btn">⋮</button>
+            </div>
+          </div>
+          <div id="ce-chart" class="chart-body"></div>
+        </div>
+
+        <div class="chart-divider"></div>
+
+        <!-- CENTER CHART (Underlying) -->
+        <div class="chart-wrapper" id="underlying-chart-wrapper">
+          <div class="chart-header">
+            <div class="chart-header-left">
+              <span class="chart-instrument">Underlying</span>
+              <span class="exch-mini">NSE</span>
+              <span class="chart-price" id="underlying-chart-price">28,048.65</span>
+              <span class="chart-change up" id="underlying-chart-change">+241.25 (0.95%)</span>
+            </div>
+            <div class="chart-header-right">
+              <button class="tf-selector" id="underlying-tf-btn">5m ▾</button>
+              <button class="icon-btn" id="underlying-menu-btn">⋮</button>
+            </div>
+          </div>
+          <div id="underlying-chart" class="chart-body"></div>
+        </div>
+
+        <div class="chart-divider"></div>
+
+        <!-- RIGHT CHART (PE) -->
+        <div class="chart-wrapper" id="pe-chart-wrapper">
+          <div class="chart-header">
+            <div class="chart-header-left">
+              <button class="chart-instrument-btn" id="switch-pe-btn">27 Mar 27500 ▾</button>
+              <span class="opt-type-badge">PE</span>
+              <span class="chart-price" id="pe-chart-price">320.15</span>
+              <span class="chart-change up" id="pe-chart-change">+18.30 (5.72%)</span>
+            </div>
+            <div class="chart-header-right">
+              <button class="tf-selector" id="pe-tf-btn">5m ▾</button>
+              <button class="icon-btn" id="pe-menu-btn">⋮</button>
+            </div>
+          </div>
+          <div id="pe-chart" class="chart-body"></div>
+        </div>
+
+      </div><!-- /#chart-area -->
+
+      <section id="trade-module" aria-label="Order controls">
+
+        <!-- ── CE Trade Panel ── -->
+        <div class="trade-panel trade-panel-call">
+          <button class="trade-panel-header trade-switch-trigger" id="trade-call-switch" type="button">
+            <span></span>
+            <strong>25250 CALL <span>OTM 28</span></strong>
+            <b>₹0.80</b>
+          </button>
+          <div class="trade-panel-meta">
+            <div><b>₹281.00</b></div>
+            <div><span>LOTS◇</span></div>
+            <div><span>325 QTY</span></div>
+            <div><b>₹4,70,104.00</b></div>
+          </div>
+          <div class="trade-panel-actions" id="ce-panel-actions">
+            <button class="buy-btn" id="ce-buy"><span class="trade-arrow">↑</span><span class="btn-label"> Buy Call</span></button>
+            <div class="trade-qty-input">
+              <button class="trade-step stepper-btn" id="ce-dec" type="button">−</button>
+              <span class="trade-field-value" id="ce-qty">5</span>
+              <button class="trade-step stepper-btn" id="ce-inc" type="button">+</button>
+              <span class="qty-lots" id="ce-lots">5 lots</span>
+            </div>
+            <button class="sell-btn" id="ce-sell"><span class="trade-arrow">↓</span><span class="btn-label"> Sell Call</span></button>
+          </div>
+          <!-- Smart action bar (shown in buy-only/sell-only preset when in position) -->
+          <div class="tpa-bar hidden" id="ce-tpa-bar">
+            <div class="tpa-main" id="ce-tpa-main">
+              <button class="tpa-price-btn" id="ce-tpa-price" data-mode="mkt">
+                <span class="tpa-mode-lbl">MKT</span>
+                <span class="tpa-price-val" id="ce-tpa-val">—</span>
+              </button>
+              <input class="tpa-limit-input hidden" id="ce-tpa-input" type="number" step="0.25" placeholder="0.00"/>
+              <button class="tpa-btn tpa-add" id="ce-tpa-add">+Add</button>
+              <button class="tpa-btn tpa-sl" id="ce-tpa-sl-open">SL</button>
+              <button class="tpa-btn tpa-tp" id="ce-tpa-tp-open">TP</button>
+              <button class="tpa-btn tpa-exit" id="ce-tpa-exit">Exit</button>
+            </div>
+            <div class="tpa-sub hidden" id="ce-tpa-sl-form">
+              <button class="tpa-back-btn" id="ce-tpa-sl-back">←</button>
+              <span class="tpa-sub-lbl">SL</span>
+              <input class="tpa-sub-input" id="ce-tpa-sl-input" type="number" step="0.25" placeholder="price"/>
+              <button class="tpa-trail-btn" id="ce-tpa-trail" data-on="false">Trail</button>
+              <button class="tpa-btn tpa-set" id="ce-tpa-set-sl">Set</button>
+            </div>
+            <div class="tpa-sub hidden" id="ce-tpa-tp-form">
+              <button class="tpa-back-btn" id="ce-tpa-tp-back">←</button>
+              <span class="tpa-sub-lbl">TP</span>
+              <input class="tpa-sub-input" id="ce-tpa-tp-input" type="number" step="0.25" placeholder="price"/>
+              <button class="tpa-btn tpa-set" id="ce-tpa-set-tp">Set</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Center (PnL + Exit All) ── -->
+        <div class="trade-center">
+          <div class="pnl-switcher" id="pnl-switcher">
+            <div class="pnl-card pnl-card--big" id="pnl-card-active" data-pnl="active">
+              <span class="pnl-card-label">Active P&amp;L</span>
+              <span class="pnl-card-value neg" id="active-pnl-val">−₹65.00</span>
+            </div>
+            <div class="pnl-card pnl-card--small" id="pnl-card-net" data-pnl="net">
+              <span class="pnl-card-label">Net P&amp;L</span>
+              <span class="pnl-card-value" id="net-pnl-val">₹0.00</span>
+            </div>
+          </div>
+          <button class="exit-all" type="button">Exit all</button>
+        </div>
+
+        <!-- ── PE Trade Panel ── -->
+        <div class="trade-panel trade-panel-put">
+          <button class="trade-panel-header trade-switch-trigger" id="trade-put-switch" type="button">
+            <span></span>
+            <strong>23200 PUT <span>OTM 13</span></strong>
+            <b>₹2.95</b>
+          </button>
+          <div class="trade-panel-meta">
+            <div><b>₹1,939.00</b></div>
+            <div><span>LOTS◇</span></div>
+            <div><span>650 QTY</span></div>
+            <div><b>₹14,72,323.00</b></div>
+          </div>
+          <div class="trade-panel-actions" id="pe-panel-actions">
+            <button class="buy-btn" id="pe-buy"><span class="trade-arrow">↑</span><span class="btn-label"> Buy Put</span></button>
+            <div class="trade-qty-input">
+              <button class="trade-step stepper-btn" id="pe-dec" type="button">−</button>
+              <span class="trade-field-value" id="pe-qty">10</span>
+              <button class="trade-step stepper-btn" id="pe-inc" type="button">+</button>
+              <span class="qty-lots" id="pe-lots">10 lots</span>
+            </div>
+            <button class="sell-btn" id="pe-sell"><span class="trade-arrow">↓</span><span class="btn-label"> Sell Put</span></button>
+          </div>
+          <!-- Smart action bar -->
+          <div class="tpa-bar hidden" id="pe-tpa-bar">
+            <div class="tpa-main" id="pe-tpa-main">
+              <button class="tpa-price-btn" id="pe-tpa-price" data-mode="mkt">
+                <span class="tpa-mode-lbl">MKT</span>
+                <span class="tpa-price-val" id="pe-tpa-val">—</span>
+              </button>
+              <input class="tpa-limit-input hidden" id="pe-tpa-input" type="number" step="0.25" placeholder="0.00"/>
+              <button class="tpa-btn tpa-add" id="pe-tpa-add">+Add</button>
+              <button class="tpa-btn tpa-sl" id="pe-tpa-sl-open">SL</button>
+              <button class="tpa-btn tpa-tp" id="pe-tpa-tp-open">TP</button>
+              <button class="tpa-btn tpa-exit" id="pe-tpa-exit">Exit</button>
+            </div>
+            <div class="tpa-sub hidden" id="pe-tpa-sl-form">
+              <button class="tpa-back-btn" id="pe-tpa-sl-back">←</button>
+              <span class="tpa-sub-lbl">SL</span>
+              <input class="tpa-sub-input" id="pe-tpa-sl-input" type="number" step="0.25" placeholder="price"/>
+              <button class="tpa-trail-btn" id="pe-tpa-trail" data-on="false">Trail</button>
+              <button class="tpa-btn tpa-set" id="pe-tpa-set-sl">Set</button>
+            </div>
+            <div class="tpa-sub hidden" id="pe-tpa-tp-form">
+              <button class="tpa-back-btn" id="pe-tpa-tp-back">←</button>
+              <span class="tpa-sub-lbl">TP</span>
+              <input class="tpa-sub-input" id="pe-tpa-tp-input" type="number" step="0.25" placeholder="price"/>
+              <button class="tpa-btn tpa-set" id="pe-tpa-set-tp">Set</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Pencil / Layout picker (far-right, absolute) ── -->
+        <button class="trade-preset-btn" id="trade-preset-btn" title="Change layout">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 2.5a1.5 1.5 0 0 1 2.5 2.5L5.5 13 3 13.5l.5-2.5L11 2.5z"/>
+          </svg>
+        </button>
+
+        <!-- ── Preset chooser panel (slides up, absolute inside section) ── -->
+        <div id="trade-preset-panel" class="hidden">
+          <div class="tpp-header">
+            <span class="tpp-title">Trade Layout</span>
+            <button class="tpp-close" id="tpp-close">×</button>
+          </div>
+          <div class="tpp-cards">
+            <button class="tpp-card active" data-preset="default">
+              <div class="tpp-preview">
+                <span class="tpp-p-buy">B</span>
+                <span class="tpp-p-qty">5</span>
+                <span class="tpp-p-sell">S</span>
+              </div>
+              <span class="tpp-name">Default</span>
+              <span class="tpp-desc">Buy &amp; Sell</span>
+            </button>
+            <button class="tpp-card" data-preset="buy-only">
+              <div class="tpp-preview">
+                <span class="tpp-p-buy wide">Buy</span>
+                <span class="tpp-p-qty">5</span>
+              </div>
+              <span class="tpp-name">Buy Only</span>
+              <span class="tpp-desc">Smart on position</span>
+            </button>
+            <button class="tpp-card" data-preset="sell-only">
+              <div class="tpp-preview">
+                <span class="tpp-p-qty">5</span>
+                <span class="tpp-p-sell wide">Sell</span>
+              </div>
+              <span class="tpp-name">Sell Only</span>
+              <span class="tpp-desc">Smart on position</span>
+            </button>
+          </div>
+        </div>
+
+      </section>
+    </main>
+
+    <!-- ─────────────── RIGHT SIDEBAR TAB ─────────────── -->
+    <div id="right-sidebar-tab" title="Portfolio & Orders">
+      Portfolio &amp; Orders
+    </div>
+
+    <!-- ─────────────── P&L PANEL (in-flow, squishes charts) ─────────────── -->
+    <div id="pnl-panel">
+      <div class="pnl-inner">
+        <div class="pnl-panel-header">
+          <h3>Portfolio &amp; Orders</h3>
+          <button class="modal-close" id="pnl-close">×</button>
+        </div>
+        <div class="pnl-summary">
+          <div class="pnl-stat">
+            <span class="pnl-stat-label">Realized</span>
+            <span class="pnl-stat-value" id="pnl-realized">₹0.00</span>
+          </div>
+          <div class="pnl-stat">
+            <span class="pnl-stat-label">Unrealized</span>
+            <span class="pnl-stat-value" id="pnl-unrealized">₹0.00</span>
+          </div>
+          <div class="pnl-stat">
+            <span class="pnl-stat-label">Total</span>
+            <span class="pnl-stat-value" id="pnl-total">₹0.00</span>
+          </div>
+        </div>
+        <div class="pnl-section-title">Open Positions</div>
+        <div class="positions-list" id="positions-list">
+          <div class="empty-state">No open positions</div>
+        </div>
+        <div class="pnl-section-title">Orders</div>
+        <div class="orders-list" id="orders-list">
+          <div class="empty-state">No orders placed</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /#main-layout -->
+
+  <!-- ═══════════════════════ BOTTOM FOOTER ═══════════════════════ -->
+  <footer id="bottom-footer">
+    <a href="#" class="footer-link" id="footer-option-chain">Option chain</a>
+    <span class="footer-sep">/</span>
+    <a href="#" class="footer-link">Strategies</a>
+  </footer>
+
+</div><!-- /#app -->
+
+
+<!-- ════════════════════ CONTEXT MENU ════════════════════ -->
+<div id="context-menu" class="context-menu hidden">
+  <div class="cm-item" data-action="alert">Set alert</div>
+  <div class="cm-item" data-action="layout">Layout</div>
+  <div class="cm-item" data-action="defaults">Set trading defaults</div>
+  <div class="cm-item cm-divider" data-action="draw">Draw</div>
+  <div class="cm-item" data-action="indicators">Add Indicators</div>
+  <div class="cm-item" data-action="templates">Indicator Templates</div>
+  <div class="cm-item" data-action="charttype">Chart type</div>
+  <div class="cm-item" data-action="chartsettings">Chart settings</div>
+</div>
+
+
+<!-- ════════════════════ TRADING DEFAULTS MODAL ════════════════════ -->
+<div id="trading-defaults-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Trading Defaults</span>
+      <div class="modal-header-right">
+        <span class="reset-link" id="td-reset">Reset</span>
+        <button class="modal-close" id="td-close">×</button>
+      </div>
+    </div>
+
+    <div class="modal-tabs">
+      <button class="modal-tab active" data-td-tab="quantity">Quantity</button>
+      <button class="modal-tab" data-td-tab="price">Price</button>
+      <button class="modal-tab" data-td-tab="sltp">SL &amp; TP</button>
+    </div>
+
+    <div class="modal-body">
+
+      <!-- ── Quantity tab ── -->
+      <div class="tab-panel active" id="td-tab-quantity">
+        <div class="section-label">Indices</div>
+        <div class="instrument-row" data-inst="NIFTY">
+          <span class="inst-name">NIFTY</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" data-inst="NIFTY" data-action="dec">−</button>
+            <div class="modal-stepper-info">
+              <span class="modal-stepper-val" id="qty-NIFTY">235</span>
+              <span class="modal-stepper-sub" id="lots-NIFTY">5 lots</span>
+            </div>
+            <button class="stepper-btn" data-inst="NIFTY" data-action="inc">+</button>
+          </div>
+        </div>
+        <div class="instrument-row" data-inst="BANKNIFTY">
+          <span class="inst-name">BANKNIFTY</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" data-inst="BANKNIFTY" data-action="dec">−</button>
+            <div class="modal-stepper-info">
+              <span class="modal-stepper-val" id="qty-BANKNIFTY">235</span>
+              <span class="modal-stepper-sub" id="lots-BANKNIFTY">16 lots</span>
+            </div>
+            <button class="stepper-btn" data-inst="BANKNIFTY" data-action="inc">+</button>
+          </div>
+        </div>
+        <div class="instrument-row" data-inst="FINNIFTY">
+          <span class="inst-name">FINNIFTY</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" data-inst="FINNIFTY" data-action="dec">−</button>
+            <div class="modal-stepper-info">
+              <span class="modal-stepper-val" id="qty-FINNIFTY">235</span>
+              <span class="modal-stepper-sub" id="lots-FINNIFTY">9 lots</span>
+            </div>
+            <button class="stepper-btn" data-inst="FINNIFTY" data-action="inc">+</button>
+          </div>
+        </div>
+        <div class="instrument-row" data-inst="SENSEX">
+          <span class="inst-name">SENSEX</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" data-inst="SENSEX" data-action="dec">−</button>
+            <div class="modal-stepper-info">
+              <span class="modal-stepper-val" id="qty-SENSEX">235</span>
+              <span class="modal-stepper-sub" id="lots-SENSEX">24 lots</span>
+            </div>
+            <button class="stepper-btn" data-inst="SENSEX" data-action="inc">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Price tab ── -->
+      <div class="tab-panel" id="td-tab-price">
+        <div class="price-section">
+          <div class="price-section-name">Stocks</div>
+          <div class="price-row">
+            <span class="price-row-label">Price type</span>
+            <select class="select-input" id="price-type-stocks">
+              <option value="market">at market</option>
+              <option value="limit">at limit</option>
+            </select>
+          </div>
+          <div class="pct-input-row" id="stocks-limit-row" style="display:none">
+            <span class="price-row-label">Limit price</span>
+            <div class="pct-input-wrap">
+              <input type="number" id="price-limit-stocks" value="1.25" min="0.1" max="10" step="0.05" />
+              <span class="pct-suffix">%</span>
+            </div>
+          </div>
+        </div>
+        <div class="price-section">
+          <div class="price-section-name">Options</div>
+          <div class="price-row">
+            <span class="price-row-label">Price type</span>
+            <select class="select-input" id="price-type-options">
+              <option value="market">at market</option>
+              <option value="limit">at limit</option>
+            </select>
+          </div>
+          <div class="pct-input-row" id="options-limit-row" style="display:none">
+            <span class="price-row-label">Limit price</span>
+            <div class="pct-input-wrap">
+              <input type="number" id="price-limit-options" value="1.25" min="0.1" max="10" step="0.05" />
+              <span class="pct-suffix">%</span>
+            </div>
+          </div>
+        </div>
+        <div class="price-section">
+          <div class="price-section-name">Futures</div>
+          <div class="price-row">
+            <span class="price-row-label">Price type</span>
+            <select class="select-input" id="price-type-futures">
+              <option value="market">at market</option>
+              <option value="limit">at limit</option>
+            </select>
+          </div>
+          <div class="pct-input-row" id="futures-limit-row" style="display:none">
+            <span class="price-row-label">Limit price</span>
+            <div class="pct-input-wrap">
+              <input type="number" id="price-limit-futures" value="1.25" min="0.1" max="10" step="0.05" />
+              <span class="pct-suffix">%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SL & TP tab ── -->
+      <div class="tab-panel" id="td-tab-sltp">
+        <div class="sltp-section-label">Stoploss</div>
+        <div class="sltp-row">
+          <span class="sltp-row-label">SL price type</span>
+          <select class="select-input" id="sl-price-type">
+            <option value="market">at market</option>
+            <option value="limit">at limit</option>
+          </select>
+        </div>
+        <div class="sltp-row">
+          <span class="sltp-row-label">SL trigger price</span>
+          <div class="pct-input-wrap">
+            <input type="number" id="sl-trigger-pct" value="1.00" min="0.1" max="50" step="0.1" />
+            <span class="pct-suffix">%</span>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-row-left">
+            <span class="sltp-row-label">Trailing SL</span>
+            <span class="sltp-sublabel">Update every 1 pt</span>
+          </div>
+          <div class="toggle-row-right">
+            <div class="modal-stepper" style="height:30px">
+              <button class="stepper-btn" id="trailing-dec" style="height:30px;width:26px">−</button>
+              <div class="modal-stepper-info" style="min-width:36px">
+                <span class="modal-stepper-val" id="trailing-val">1</span>
+              </div>
+              <button class="stepper-btn" id="trailing-inc" style="height:30px;width:26px">+</button>
+            </div>
+            <div class="toggle-track" id="trailing-sl-track">
+              <div class="toggle-thumb"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sltp-section-label" style="margin-top:8px">Target Profit</div>
+        <div class="sltp-row">
+          <span class="sltp-row-label">TP price type</span>
+          <select class="select-input" id="tp-price-type">
+            <option value="market">at market</option>
+            <option value="limit">at limit</option>
+          </select>
+        </div>
+        <div class="sltp-row">
+          <span class="sltp-row-label">TP trigger price</span>
+          <div class="pct-input-wrap">
+            <input type="number" id="tp-trigger-pct" value="1.00" min="0.1" max="100" step="0.1" />
+            <span class="pct-suffix">%</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.modal-body -->
+
+    <div class="modal-footer">
+      <button class="modal-cancel" id="td-cancel">Cancel</button>
+      <button class="modal-apply" id="td-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════════════ SWITCH LEG PANEL ════════════════════ -->
+<div id="switch-leg-panel">
+  <div class="sl-header">
+    <span class="sl-title" id="sl-title">Switch Leg</span>
+    <button class="modal-close" id="sl-close">×</button>
+  </div>
+  <div class="sl-tabs" id="sl-tabs">
+    <button class="sl-tab active" data-sl-tab="chain">Option chain</button>
+  </div>
+  <div class="oc-table-wrap">
+    <table class="oc-table">
+      <thead id="oc-thead"></thead>
+      <tbody id="oc-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+
+<!-- ════════════════════ ORDER OVERLAY ════════════════════ -->
+<div id="order-overlay" class="hidden">
+  <div class="oo-shell">
+    <div class="oo-main">
+      <div class="oo-header">
+        <div class="oo-grip" aria-hidden="true">
+          <span></span><span></span><span></span>
+          <span></span><span></span><span></span>
+        </div>
+        <button class="oo-preset-btn" type="button" id="oo-preset-btn">Apply Preset</button>
+        <button class="oo-close-btn" id="oo-cancel-x" aria-label="Close order module">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="oo-summary">
+        <div class="oo-summary-title" id="oo-summary-title">DELHIVERY</div>
+        <div class="oo-summary-line">
+          <span class="oo-summary-price" id="oo-current-price">&#8377;450.75</span>
+          <span class="oo-summary-change down" id="oo-summary-change">&#9660; 2.85 (0.63%)</span>
+          <span class="oo-summary-exch">NSE</span>
+          <span class="oo-summary-sep">&#8249;&#8250;</span>
+          <span class="oo-summary-secondary" id="oo-summary-secondary">BSE 450.00</span>
+        </div>
+      </div>
+
+      <div class="oo-body">
+        <div class="oo-top-controls">
+          <div class="oo-segment dual" id="oo-side-segment">
+            <button class="oo-segment-btn active" type="button" data-oo-side="BUY">Buy</button>
+            <button class="oo-segment-btn" type="button" data-oo-side="SELL">Sell</button>
+          </div>
+          <div class="oo-segment dual" id="oo-product-segment">
+            <button class="oo-segment-btn active" type="button" data-oo-product="delivery">Delivery</button>
+            <button class="oo-segment-btn" type="button" data-oo-product="intraday">Intraday</button>
+          </div>
+        </div>
+
+        <section class="oo-row-card" id="oo-quantity-card">
+          <div class="oo-field-row">
+            <div class="oo-row-label-wrap">
+              <span class="oo-row-label">Quantity</span>
+              <span class="oo-row-caption" id="oo-qty-caption">1 lot</span>
+            </div>
+            <div class="oo-stepper">
+              <button class="oo-step-btn" type="button" data-oo-qty="dec">&#8722;</button>
+              <span class="oo-step-value" id="oo-qty-value">1</span>
+              <button class="oo-step-btn" type="button" data-oo-qty="inc">+</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="oo-row-card">
+          <div class="oo-field-row compact">
+            <div class="oo-row-label-wrap inline">
+              <span class="oo-row-label">Price</span>
+              <button class="oo-link-btn" type="button" id="oo-price-mode-btn">Market</button>
+            </div>
+            <span class="oo-row-value" id="oo-price-display">&#8377;450.70</span>
+          </div>
+          <div class="oo-inline-input hidden" id="oo-limit-row">
+            <div class="oo-field-input">
+              <input type="number" id="oo-limit-input" placeholder="0.00" step="0.05" />
+              <span class="oo-suffix">&#8377;</span>
+            </div>
+          </div>
+          <div class="oo-tick-note">Tick size: <span id="oo-tick-size">0.05</span></div>
+        </section>
+
+        <section class="oo-card">
+          <button class="oo-card-head" type="button" data-oo-accordion="sltp">
+            <span>Add Stoploss &amp; Target Profit</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="oo-card-body hidden" id="oo-sltp-body">
+            <div class="oo-toggle-row">
+              <button class="oo-toggle" type="button" data-oo-toggle="sl"><span></span></button>
+              <div class="oo-toggle-meta">
+                <span class="oo-toggle-label">Stoploss</span>
+                <button class="oo-link-btn hidden" type="button" id="oo-sl-mode-btn">Market</button>
+              </div>
+            </div>
+            <div class="oo-subform hidden" id="oo-sl-panel">
+              <div class="oo-subrow">
+                <span class="oo-subrow-label">Trigger</span>
+                <div class="oo-subrow-values">
+                  <span class="oo-subrow-price" id="oo-sl-price">&#8377;441.74</span>
+                  <span class="oo-subrow-sep">/</span>
+                  <span class="oo-subrow-pct" id="oo-sl-pct">2%</span>
+                </div>
+              </div>
+              <div class="oo-tick-note">Tick size: <span>0.05</span></div>
+            </div>
+            <div class="oo-toggle-row">
+              <button class="oo-toggle" type="button" data-oo-toggle="trailing"><span></span></button>
+              <div class="oo-toggle-meta">
+                <span class="oo-toggle-label">Trailing SL</span>
+              </div>
+            </div>
+            <div class="oo-subform hidden" id="oo-trailing-panel">
+              <div class="oo-subrow">
+                <span class="oo-subrow-label">Trail Jump</span>
+                <div class="oo-stepper compact">
+                  <button class="oo-step-btn" type="button" data-oo-trail="dec">&#8722;</button>
+                  <span class="oo-step-value" id="oo-trail-value">0.05</span>
+                  <button class="oo-step-btn" type="button" data-oo-trail="inc">+</button>
+                </div>
+              </div>
+              <div class="oo-tick-note">Updates every <span id="oo-trail-note">0.05</span> pts.</div>
+            </div>
+            <div class="oo-toggle-row">
+              <button class="oo-toggle" type="button" data-oo-toggle="tp"><span></span></button>
+              <div class="oo-toggle-meta">
+                <span class="oo-toggle-label">Target Profit</span>
+                <button class="oo-link-btn hidden" type="button" id="oo-tp-mode-btn">Market</button>
+              </div>
+            </div>
+            <div class="oo-subform hidden" id="oo-tp-panel">
+              <div class="oo-subrow">
+                <span class="oo-subrow-label">Trigger</span>
+                <div class="oo-subrow-values">
+                  <span class="oo-subrow-price" id="oo-tp-price">&#8377;459.76</span>
+                  <span class="oo-subrow-sep">/</span>
+                  <span class="oo-subrow-pct" id="oo-tp-pct">2%</span>
+                </div>
+              </div>
+              <div class="oo-tick-note">Tick size: <span>0.05</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="oo-card">
+          <button class="oo-card-head" type="button" data-oo-accordion="advanced">
+            <span>Advanced</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="oo-card-body hidden" id="oo-advanced-body">
+            <div class="oo-tab-strip">
+              <button class="oo-tab-btn active" type="button" data-oo-tab="entry">Entry <span>(3)</span></button>
+              <button class="oo-tab-btn" type="button" data-oo-tab="exit">Exit <span>(1)</span></button>
+            </div>
+            <div class="oo-advanced-panel" id="oo-advanced-entry">
+              <div class="oo-toggle-row">
+                <button class="oo-toggle" type="button" data-oo-toggle="entryTrigger"><span></span></button>
+                <div class="oo-toggle-meta"><span class="oo-toggle-label">Trigger</span></div>
+              </div>
+              <div class="oo-subform hidden" id="oo-entry-trigger-panel">
+                <div class="oo-condition-grid">
+                  <span class="oo-subrow-label">Trigger When</span>
+                  <button class="oo-link-btn" type="button" id="oo-trigger-when-btn">moves above</button>
+                  <span class="oo-subrow-price" id="oo-entry-trigger-price">&#8377;450.85</span>
+                </div>
+                <div class="oo-tick-note">Tick size: <span>0.05</span></div>
+              </div>
+              <div class="oo-toggle-row">
+                <button class="oo-toggle" type="button" data-oo-toggle="iceberg"><span></span></button>
+                <div class="oo-toggle-meta"><span class="oo-toggle-label">Iceberg</span></div>
+              </div>
+              <div class="oo-subform hidden" id="oo-iceberg-panel">
+                <div class="oo-subrow">
+                  <span class="oo-subrow-label">Number of legs</span>
+                  <div class="oo-stepper compact">
+                    <button class="oo-step-btn" type="button" data-oo-legs="dec">&#8722;</button>
+                    <span class="oo-step-value" id="oo-legs-value">1</span>
+                    <button class="oo-step-btn" type="button" data-oo-legs="inc">+</button>
+                  </div>
+                </div>
+                <div class="oo-tick-note">Max qty per leg: <span id="oo-legs-note">1</span></div>
+              </div>
+              <div class="oo-toggle-row">
+                <button class="oo-toggle" type="button" data-oo-toggle="entryTime"><span></span></button>
+                <div class="oo-toggle-meta"><span class="oo-toggle-label">Entry Time</span></div>
+              </div>
+              <div class="oo-subform hidden" id="oo-entry-time-panel">
+                <div class="oo-subrow">
+                  <span class="oo-subrow-label">Time</span>
+                  <span class="oo-subrow-price" id="oo-entry-time">02 : 10 : 54 PM</span>
+                </div>
+              </div>
+            </div>
+            <div class="oo-advanced-panel hidden" id="oo-advanced-exit">
+              <div class="oo-toggle-row">
+                <button class="oo-toggle" type="button" data-oo-toggle="exitTime"><span></span></button>
+                <div class="oo-toggle-meta"><span class="oo-toggle-label">Exit Time</span></div>
+              </div>
+              <div class="oo-subform hidden" id="oo-exit-time-panel">
+                <div class="oo-subrow">
+                  <span class="oo-subrow-label">Time</span>
+                  <span class="oo-subrow-price" id="oo-exit-time">03 : 15 : 00 PM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="oo-validity-row">
+          <span class="oo-row-label">Validity</span>
+          <button class="oo-link-btn" type="button" id="oo-validity-btn">IOC</button>
+        </div>
+      </div>
+
+      <div class="oo-footer">
+        <div class="oo-footer-stats">
+          <div class="oo-stat">
+            <span class="oo-stat-label">Required</span>
+            <span class="oo-stat-value" id="oo-required">&#8377;90.89</span>
+          </div>
+          <div class="oo-stat">
+            <span class="oo-stat-label">Balance</span>
+            <span class="oo-stat-value" id="oo-balance">&#8377;583.74</span>
+          </div>
+        </div>
+        <div class="oo-warning" id="oo-warning">Add funds to place this order.</div>
+        <div class="oo-actions">
+          <button class="oo-secondary hidden" id="oo-cancel">Cancel</button>
+          <button class="oo-confirm buy" id="oo-confirm">Add Funds</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="oo-rail">
+      <button class="oo-rail-btn" type="button" data-oo-flyout="book" aria-label="Open order book">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <button class="oo-rail-btn" type="button" data-oo-flyout="defaults" aria-label="Open default settings">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5l1 .5 1.1-.3.8.8-.3 1.1.5 1 .9.4v1.2l-.9.4-.5 1 .3 1.1-.8.8-1.1-.3-1 .5-1-.5-1.1.3-.8-.8.3-1.1-.5-1-.9-.4V6.4l.9-.4.5-1-.3-1.1.8-.8 1.1.3 1-.5z" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+      <button class="oo-rail-btn" type="button" data-oo-flyout="alert" aria-label="Open alerts">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v5m0 4.2v.3M3.2 8a4.8 4.8 0 1 1 9.6 0 4.8 4.8 0 0 1-9.6 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </button>
+      <button class="oo-rail-btn" type="button" data-oo-flyout="copy" aria-label="Open quick actions">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 2.5H5a1.5 1.5 0 0 0-1.5 1.5v8A1.5 1.5 0 0 0 5 13.5h6A1.5 1.5 0 0 0 12.5 12V5l-2.5-2.5z" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M10 2.5V5h2.5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="oo-flyout" class="hidden">
+  <div class="oo-flyout-header">
+    <div class="oo-flyout-title" id="oo-flyout-title">Order Book</div>
+    <button class="oo-close-btn" id="oo-flyout-close" aria-label="Close side panel">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="oo-flyout-body" id="oo-flyout-body">
+    <div class="oo-flyout-panel" data-oo-panel="book">
+      <div class="oo-book-head">
+        <span class="up">Bids</span>
+        <span class="down">Asks</span>
+      </div>
+      <div class="oo-book-grid">
+        <div>LTP <b>450.80</b></div>
+        <div>LTQ <b>5</b></div>
+        <div>Vol (in L) <b>7.72</b></div>
+      </div>
+      <div class="oo-book-table">
+        <div class="oo-book-row head"><span>Qty</span><span>Orders</span><span>Price</span><span>Price</span><span>Orders</span><span>Qty</span></div>
+        <div class="oo-book-row"><span class="up">119</span><span class="up">1</span><span class="up">450.65</span><span class="down">450.80</span><span class="down">7</span><span class="down">6,383</span></div>
+        <div class="oo-book-row"><span class="up">2</span><span class="up">1</span><span class="up">450.60</span><span class="down">450.85</span><span class="down">5</span><span class="down">2,393</span></div>
+        <div class="oo-book-row"><span class="up">44</span><span class="up">2</span><span class="up">450.50</span><span class="down">450.90</span><span class="down">9</span><span class="down">2,728</span></div>
+        <div class="oo-book-row"><span class="up">362</span><span class="up">5</span><span class="up">450.45</span><span class="down">450.95</span><span class="down">8</span><span class="down">3,064</span></div>
+        <div class="oo-book-row"><span class="up">823</span><span class="up">8</span><span class="up">450.40</span><span class="down">451.00</span><span class="down">9</span><span class="down">975</span></div>
+      </div>
+    </div>
+
+    <div class="oo-flyout-panel hidden" data-oo-panel="defaults">
+      <div class="oo-defaults-head">
+        <button class="oo-tab-btn active" type="button">Qty</button>
+        <button class="oo-tab-btn" type="button">Price</button>
+        <button class="oo-tab-btn" type="button">Time</button>
+      </div>
+      <div class="oo-defaults-segment">
+        <button class="oo-segment-btn active" type="button">Indices</button>
+        <button class="oo-segment-btn" type="button">Stocks and F&amp;O</button>
+      </div>
+      <div class="oo-defaults-list">
+        <div class="oo-default-row"><span>NIFTY</span><div class="oo-mini-stepper"><button type="button">&#8722;</button><span>1</span><button type="button">+</button></div></div>
+        <div class="oo-default-row"><span>BANKNIFTY</span><div class="oo-mini-stepper"><button type="button">&#8722;</button><span>1</span><button type="button">+</button></div></div>
+        <div class="oo-default-row"><span>FINNIFTY</span><div class="oo-mini-stepper"><button type="button">&#8722;</button><span>1</span><button type="button">+</button></div></div>
+        <div class="oo-default-row"><span>MIDCPNIFTY</span><div class="oo-mini-stepper"><button type="button">&#8722;</button><span>1</span><button type="button">+</button></div></div>
+        <div class="oo-default-row"><span>SENSEX</span><div class="oo-mini-stepper"><button type="button">&#8722;</button><span>1</span><button type="button">+</button></div></div>
+      </div>
+      <div class="oo-flyout-actions">
+        <button class="oo-secondary show" type="button">Cancel</button>
+        <button class="oo-confirm buy" type="button">Save changes</button>
+      </div>
+    </div>
+
+    <div class="oo-flyout-panel hidden" data-oo-panel="alert">
+      <div class="oo-alert-tabs">
+        <button class="oo-segment-btn active" type="button">Basic Alerts</button>
+        <button class="oo-segment-btn" type="button">Technical Alerts</button>
+      </div>
+      <div class="oo-alert-form">
+        <div class="oo-alert-row"><span>Set alert on</span><button class="oo-segment-btn active" type="button">Price</button></div>
+        <div class="oo-alert-row"><span>Condition</span><div class="oo-alert-condition"><button class="oo-segment-btn active" type="button">&gt;</button><button class="oo-segment-btn" type="button">&lt;</button></div></div>
+        <div class="oo-alert-input"><span>Price</span><span>450.55</span><span>0%</span></div>
+        <div class="oo-alert-presets">
+          <button type="button">-10%</button><button type="button">-5%</button><button type="button">-2%</button>
+          <button type="button">2%</button><button type="button">5%</button><button type="button">10%</button>
+        </div>
+        <div class="oo-alert-row"><span>Validity</span><div class="oo-alert-condition"><button class="oo-segment-btn active" type="button">1D</button><button class="oo-segment-btn" type="button">1W</button><button class="oo-segment-btn" type="button">1M</button><button class="oo-segment-btn" type="button">1Y</button></div></div>
+      </div>
+      <div class="oo-flyout-actions">
+        <button class="oo-secondary show" type="button">Cancel</button>
+        <button class="oo-confirm buy" type="button">Set alert</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

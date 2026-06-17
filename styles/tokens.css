@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ── Backgrounds ── */
+  --bg-base:        #0D0F14;
+  --bg-panel:       #161820;
+  --bg-card:        #1E2029;
+  --bg-card-raised: #252838;
+
+  /* ── Text ── */
+  --text-primary:   #E8E9F0;
+  --text-secondary: #8B8FA8;
+  --text-muted:     #555870;
+
+  /* ── Semantic colours ── */
+  --green:          #00C853;
+  --green-dim:      rgba(0, 200, 83, 0.14);
+  --red:            #EF4444;
+  --red-dim:        rgba(239, 68, 68, 0.14);
+  --amber:          #F59E0B;
+  --amber-dim:      rgba(245, 158, 11, 0.14);
+  --white:          #FFFFFF;
+
+  /* ── Borders ── */
+  --border:         #2A2D3E;
+  --border-subtle:  #1E2232;
+
+  /* ── Brand gradients (from ASSET_EXTRACTION_NOTES.md) ── */
+  --gradient-logo:  linear-gradient(135deg, #90d0c0 0%, #70c0e0 55%, #60c0f0 100%);
+  --gradient-ai:    linear-gradient(135deg, #20b080 0%, #40a040 58%, #60a030 100%);
+
+  /* ── Typography ── */
+  --font:           'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:      'Inter', ui-monospace, monospace; /* tabular-nums via feature */
+
+  /* ── Layout dimensions ── */
+  --top-bar-h:      32px;
+  --navbar-w:       48px;
+  --sub-header-h:   40px;
+  --chart-header-h: 36px;
+  --buy-sell-h:     44px;
+  --right-tab-w:    24px;
+
+  /* ── Interactive states ── */
+  --toggle-on:      #06B6D4;   /* teal-blue — matches reference exactly */
+
+  /* ── Shadows ── */
+  --shadow-menu:    0 8px 24px rgba(0,0,0,0.55);
+  --shadow-modal:   0 16px 48px rgba(0,0,0,0.65);
+
+  /* ── Radii ── */
+  --r-sm:  4px;
+  --r-md:  6px;
+  --r-lg:  10px;
+  --r-xl:  12px;
+  --r-pill: 999px;
+}
