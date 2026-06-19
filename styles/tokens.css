@@ -34,12 +34,12 @@
   --font-mono:      'Inter', ui-monospace, monospace; /* tabular-nums via feature */
 
   /* ── Layout dimensions ── */
-  --top-bar-h:      32px;
+  --top-bar-h:      42px;
   --navbar-w:       48px;
   --sub-header-h:   40px;
   --chart-header-h: 36px;
   --buy-sell-h:     44px;
-  --right-tab-w:    24px;
+  --right-tab-w:    26px;
 
   /* ── Interactive states ── */
   --toggle-on:      #06B6D4;   /* teal-blue — matches reference exactly */

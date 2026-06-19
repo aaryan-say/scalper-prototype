@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════
 //  MAIN.JS  —  bootstrap, wire everything together
 // ═══════════════════════════════════════════════════════════
-import { initCharts, updateCECandle, updateUnderlyingCandle, updatePECandle, switchCEChart, switchPEChart, drawOrderLine, updateOrderLine, removeOrderLine, drawPositionLine, subscribeChartCrosshair, getPriceY, getPriceFromY, resizeCharts } from './charts.js'
+import { initCharts, updateCECandle, updateUnderlyingCandle, updatePECandle, switchCEChart, switchPEChart, drawOrderLine, updateOrderLine, removeOrderLine, drawPositionLine, subscribeChartCrosshair, getPriceY, getPriceFromY, resizeCharts, getVisibleRanges, restoreVisibleRanges } from './charts.js'
 import { priceEngine, currentPrices, INSTRUMENTS, buildOptionChain, generateHistory } from './data.js'
 import * as store from './store.js'
 import { $, $$, fmtPrice, fmtPriceShort, fmtChange, fmtPnl, fmtPct, fmtOI } from './utils.js'
@@ -15,6 +15,7 @@ const NIFTY_LOT       = 50
 let pendingOrderSide  = null
 let pendingOrderChart = null   // 'ce' | 'pe'
 let _switchingLeg     = 'ce'  // which leg the switch panel was opened for
+let _oisSide          = 'ce'  // calls or puts toggle in OI surface view
 let _orderFlyoutMode  = ''
 let _orderOverlayState = {
   side: 'BUY',
@@ -92,15 +93,42 @@ const OPTION_METRIC_CONFIG = {
     format: value => Math.round(value).toString(),
     icon: '<path d="M4 13a6 6 0 1 1 12 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 13l3.8-4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="13" r="1.3" fill="currentColor"/>',
   },
+  gex: {
+    id: 'metric-gex',
+    label: 'GEX',
+    tooltip: value => `Gamma Exposure: ${value >= 0 ? '+' : ''}${value.toFixed(1)}B — Dealers ${value >= 0.5 ? 'long gamma (suppressing volatility)' : value <= -0.5 ? 'short gamma (amplifying moves)' : 'near gamma flip'}`,
+    format: value => `${value >= 0 ? '+' : ''}${value.toFixed(1)}B`,
+    icon: '<path d="M3 14c1.5-4 3-4 4.5 0s3 4 4.5 0 2.5-4 4-1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 4v3M10 4l-1.5 2M10 4l1.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  gammaRegime: {
+    id: 'metric-gamma-regime',
+    label: 'Regime',
+    tooltip: value => `Gamma Regime: ${gammaRegimeLabel(value)} — ${value >= 60 ? 'range-bound, mean-reverting' : value <= 40 ? 'trending, high volatility' : 'transitioning, unstable'}`,
+    format: value => gammaRegimeLabel(value),
+    icon: '<rect x="3" y="12" width="3" height="5" rx="1" fill="currentColor" opacity=".45"/><rect x="8.5" y="8" width="3" height="9" rx="1" fill="currentColor" opacity=".7"/><rect x="14" y="4" width="3" height="13" rx="1" fill="currentColor"/>',
+  },
 }
 let _pinnedIndices = HEADER_INDEX_ITEMS.map(item => item.key)
-let _enabledOptionMetrics = { pcr: true, maxPain: true, atmIv: true, ivPercentile: true }
+let _enabledOptionMetrics = { pcr: true, maxPain: false, atmIv: true, ivPercentile: false, gex: true, gammaRegime: true }
 let _optionMetricTimer = null
 
 // Shared container for all chart overlays (position labels, "+" buttons, popups)
 let _chartOverlayContainer = null
 const _posOverlays = {}   // posId → { chartId, el, entryPrice, chartEl }
 const _priceHandles = {}  // id → draggable limit / SL / TP chart handles
+
+// ── Toast notifications ──────────────────────────────────────
+function showToast(message, type = 'info') {
+  const el = document.createElement('div')
+  el.className = `app-toast app-toast--${type}`
+  el.textContent = message
+  document.body.appendChild(el)
+  requestAnimationFrame(() => el.classList.add('app-toast--visible'))
+  setTimeout(() => {
+    el.classList.remove('app-toast--visible')
+    el.addEventListener('transitionend', () => el.remove(), { once: true })
+  }, 3500)
+}
 
 // ── Boot ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -124,6 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireContextMenus()
   wireTradingDefaultsModal()
   wireSwitchLegPanel()
+  wireChartOverview()
   wireDraggableTfSelectors()
   wireOrderOverlay()
   wirePnlPanel()
@@ -132,6 +161,8 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTradingDefaultsIntoModal()
   wireCrosshairButtons()
   wireChartVisibility()
+  wireDrawingToolbar()
+  wireChartToast()
   startPositionOverlayLoop()
   startPriceHandleLoop()
   priceEngine.start()
@@ -150,8 +181,10 @@ function seedPriceEngine() {
   })
 
   store.updatePrice('NIFTY',         currentPrices.NIFTY)
-  store.updatePrice('NIFTY_27500CE', currentPrices.NIFTY_27500CE)
-  store.updatePrice('NIFTY_27500PE', currentPrices.NIFTY_27500PE)
+  const _ceBA = priceEngine.getBidAsk('NIFTY_27500CE')
+  const _peBA = priceEngine.getBidAsk('NIFTY_27500PE')
+  store.updatePrice('NIFTY_27500CE', currentPrices.NIFTY_27500CE, _ceBA.bid, _ceBA.ask)
+  store.updatePrice('NIFTY_27500PE', currentPrices.NIFTY_27500PE, _peBA.bid, _peBA.ask)
 
   priceEngine.on('tick', ({ id, price, bid, ask }) => {
     store.updatePrice(id, price, bid, ask)
@@ -161,6 +194,12 @@ function seedPriceEngine() {
     if (id === 'NIFTY_27500CE') { updateCEHeader(price); _updateTpaPrice('ce', price) }
     if (id === 'NIFTY_27500PE') { updatePEHeader(price); _updateTpaPrice('pe', price) }
     if (id === 'SENSEX')        updateSensexChip(price)
+    if (_covHistory[id]) {
+      _covHistory[id].push(price)
+      if (_covHistory[id].length > 120) _covHistory[id].shift()
+      updateCovCard(id)
+    }
+    if (id === 'NIFTY' && _oiProfileOn) _drawOiProfile()
   })
 
   priceEngine.on('candleUpdate', ({ id, bar }) => {
@@ -336,65 +375,92 @@ function updateCompactMode() {
   })
 }
 
+// ── Shared strike switcher — updates BOTH CE and PE charts simultaneously ──
+function switchBothLegsToStrike(strike) {
+  const seed = parseInt(strike) % 97 + 1
+  const ceHist = generateHistory(currentPrices.NIFTY_27500CE, 0.028, 200, seed)
+  const peHist = generateHistory(currentPrices.NIFTY_27500PE, 0.028, 200, seed + 7)
+
+  switchCEChart(ceHist)
+  _ceBase = ceHist.at(-1).close
+  $('#ce-chart-price').textContent = _ceBase.toFixed(2)
+  $('#switch-ce-btn').textContent  = `27 Mar ${strike} ▾`
+  $('#trade-call-switch strong').innerHTML = `${strike} CALL <span>OTM 28</span>`
+
+  switchPEChart(peHist)
+  _peBase = peHist.at(-1).close
+  $('#pe-chart-price').textContent = _peBase.toFixed(2)
+  $('#switch-pe-btn').textContent  = `27 Mar ${strike} ▾`
+  $('#trade-put-switch strong').innerHTML  = `${strike} PUT <span>OTM 13</span>`
+}
+
+function _buildupLabel(side) {
+  if (side.chgPct > 0.8)  return { label: 'LB', cls: 'lb' }
+  if (side.chgPct < -0.8) return { label: 'SC', cls: 'sc' }
+  if (side.chgPct > 0)    return { label: 'UW', cls: 'uw' }
+  return                         { label: 'SB', cls: 'sb' }
+}
+
 function renderFullOptionChain(chain) {
   const tbody = $('#oc-full-tbody')
   if (!tbody) return
+  const maxCeOI = Math.max(...chain.map(r => r.ce.oi), 1)
+  const maxPeOI = Math.max(...chain.map(r => r.pe.oi), 1)
   tbody.innerHTML = chain.map(row => {
-    const rowCls = [
-      row.atm ? 'atm' : '',
-      row.ce.itm ? 'itm-call' : '',
-      row.pe.itm ? 'itm-put' : '',
-    ].filter(Boolean).join(' ')
-    const cChg = row.ce.chgPct >= 0 ? 'up' : 'down'
-    const pChg = row.pe.chgPct >= 0 ? 'up' : 'down'
-    const cSign = row.ce.chgPct >= 0 ? '+' : ''
-    const pSign = row.pe.chgPct >= 0 ? '+' : ''
+    const rowCls = [row.atm ? 'oc-atm-row' : '', row.ce.itm ? 'itm-c' : '', row.pe.itm ? 'itm-p' : ''].filter(Boolean).join(' ')
+    const cePct  = ((row.ce.oi / maxCeOI) * 100).toFixed(1)
+    const pePct  = ((row.pe.oi / maxPeOI) * 100).toFixed(1)
+    const ceB    = _buildupLabel(row.ce)
+    const peB    = _buildupLabel(row.pe)
+    const ceCls  = row.ce.chgPct >= 0 ? 'up' : 'down'
+    const peCls  = row.pe.chgPct >= 0 ? 'up' : 'down'
+    const ceLTP  = row.ce.price < 10 ? row.ce.price.toFixed(2) : row.ce.price.toFixed(1)
+    const peLTP  = row.pe.price < 10 ? row.pe.price.toFixed(2) : row.pe.price.toFixed(1)
     return `<tr class="${rowCls}" data-strike="${row.strike}">
-      <td class="ft-oi-c" data-side="ce">${fmtOI(row.ce.oi)}</td>
-      <td class="ft-price-c" data-side="ce">
-        <div class="ft-val-wrap" style="align-items:flex-end">
-          <span class="ft-p">${row.ce.price.toFixed(2)}</span>
-          <span class="ft-chg ${cChg}">${cSign}${row.ce.chgPct}%</span>
+      <td class="ft-ce-oi">
+        <div class="oc-oi-fill ce" style="width:${cePct}%"></div>
+        <div class="oc-oi-content">
+          <span class="oc-oi-val">${fmtOI(row.ce.oi)}</span>
+          <span class="oc-buildup ${ceB.cls}">${ceB.label}</span>
         </div>
       </td>
-      <td class="ft-strike">${row.strike}</td>
-      <td class="ft-price-p" data-side="pe">
-        <div class="ft-val-wrap" style="align-items:flex-start">
-          <span class="ft-p">${row.pe.price.toFixed(2)}</span>
-          <span class="ft-chg ${pChg}">${pSign}${row.pe.chgPct}%</span>
+      <td class="ft-ce-price">
+        <div class="ft-ltp-wrap">
+          <span class="ft-ltp ${ceCls}">${ceLTP}</span>
+          <span class="ft-ltp-chg ${ceCls}">${row.ce.chgPct >= 0 ? '+' : ''}${row.ce.chgPct.toFixed(1)}%</span>
         </div>
       </td>
-      <td class="ft-oi-p" data-side="pe">${fmtOI(row.pe.oi)}</td>
+      <td class="ft-strike ${row.atm ? 'ft-atm' : ''}">
+        ${row.atm ? '<span class="oc-atm-badge">ATM</span>' : ''}
+        <span class="oc-strike-num">${row.strike}</span>
+      </td>
+      <td class="ft-pe-price">
+        <div class="ft-ltp-wrap ft-ltp-wrap--pe">
+          <span class="ft-ltp ${peCls}">${peLTP}</span>
+          <span class="ft-ltp-chg ${peCls}">${row.pe.chgPct >= 0 ? '+' : ''}${row.pe.chgPct.toFixed(1)}%</span>
+        </div>
+      </td>
+      <td class="ft-pe-oi">
+        <div class="oc-oi-fill pe" style="width:${pePct}%"></div>
+        <div class="oc-oi-content pe">
+          <span class="oc-oi-val">${fmtOI(row.pe.oi)}</span>
+          <span class="oc-buildup ${peB.cls}">${peB.label}</span>
+        </div>
+      </td>
     </tr>`
   }).join('')
 
   tbody.querySelectorAll('tr').forEach(tr => {
-    tr.addEventListener('click', e => {
-      const cell = e.target.closest('td')
-      const side = cell?.dataset.side
-      if (!side) return
-      const strike = tr.dataset.strike
-      const newHist = generateHistory(
-        side === 'ce' ? currentPrices.NIFTY_27500CE : currentPrices.NIFTY_27500PE,
-        0.028, 200, parseInt(strike) % 97 + 1
-      )
-      if (side === 'ce') {
-        switchCEChart(newHist)
-        $('#ce-chart-price').textContent = newHist.at(-1).close.toFixed(2)
-        $('#switch-ce-btn').textContent  = `27 Mar ${strike} ▾`
-        $('#trade-call-switch strong').innerHTML = `${strike} CALL <span>OTM 28</span>`
-      } else {
-        switchPEChart(newHist)
-        $('#pe-chart-price').textContent = newHist.at(-1).close.toFixed(2)
-        $('#switch-pe-btn').textContent  = `27 Mar ${strike} ▾`
-        $('#trade-put-switch strong').innerHTML  = `${strike} PUT <span>OTM 13</span>`
-      }
+    tr.addEventListener('click', () => {
+      switchBothLegsToStrike(tr.dataset.strike)
       closeOptionChainPanel()
     })
   })
 }
 
 // ── Sub-header ───────────────────────────────────────────────
+let _oiProfileOn = false
+
 function wireSubHeader() {
   const wrap  = $('#one-click-wrap')
   const track = $('#one-click-track')
@@ -402,6 +468,125 @@ function wireSubHeader() {
     oneClickOn = !oneClickOn
     track.classList.toggle('on', oneClickOn)
   })
+
+  $('#oi-profile-btn')?.addEventListener('click', () => {
+    _oiProfileOn = !_oiProfileOn
+    $('#oi-profile-btn').classList.toggle('active', _oiProfileOn)
+    if (_oiProfileOn) {
+      _initOiProfileCanvas()
+      _drawOiProfile()
+    } else {
+      _clearOiProfile()
+    }
+  })
+
+  $('#profile-setting-btn')?.addEventListener('click', () => {
+    $('#profile-setting-btn').classList.toggle('active')
+  })
+}
+
+// ── OI Profile overlay on underlying chart ───────────────────
+let _oiProfileCanvas  = null
+let _oiProfileRafId   = null
+
+function _initOiProfileCanvas() {
+  if (_oiProfileCanvas) return
+  const chartEl = $('#underlying-chart')
+  if (!chartEl) return
+  chartEl.style.position = 'relative'
+  _oiProfileCanvas = document.createElement('canvas')
+  _oiProfileCanvas.id = 'oi-profile-canvas'
+  Object.assign(_oiProfileCanvas.style, {
+    position: 'absolute', inset: '0', width: '100%', height: '100%',
+    pointerEvents: 'none', zIndex: '4',
+  })
+  chartEl.appendChild(_oiProfileCanvas)
+}
+
+function _clearOiProfile() {
+  if (!_oiProfileCanvas) return
+  const ctx = _oiProfileCanvas.getContext('2d')
+  ctx.clearRect(0, 0, _oiProfileCanvas.width, _oiProfileCanvas.height)
+}
+
+function _drawOiProfile() {
+  if (!_oiProfileOn || !_oiProfileCanvas) return
+  const chartEl = $('#underlying-chart')
+  if (!chartEl) return
+
+  const dpr = window.devicePixelRatio || 1
+  const W   = chartEl.offsetWidth
+  const H   = chartEl.offsetHeight
+  if (!W || !H) return
+
+  _oiProfileCanvas.width  = W * dpr
+  _oiProfileCanvas.height = H * dpr
+  _oiProfileCanvas.style.width  = W + 'px'
+  _oiProfileCanvas.style.height = H + 'px'
+
+  const ctx = _oiProfileCanvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, W, H)
+
+  const spot  = priceEngine.getPrice('NIFTY') || currentPrices.NIFTY
+  const chain = buildOptionChain(spot)
+
+  const maxOI  = Math.max(...chain.map(r => Math.max(r.ce.oi, r.pe.oi)), 1)
+  const maxBar = W * 0.14
+  const barH   = Math.max(3, Math.min(14, H / chain.length * 0.65))
+  const labelW = 64
+  const SCALE_W = 72  // price scale width on right
+
+  chain.forEach(row => {
+    const y = getPriceY('underlying', row.strike)
+    if (y === null || y < 2 || y > H - 2) return
+    const yp = Math.round(y) - barH / 2
+
+    const ceW = (row.ce.oi / maxOI) * maxBar
+    const peW = (row.pe.oi / maxOI) * maxBar
+    const rightEdge = W - SCALE_W - 4
+
+    // PE bar (green) — further left
+    ctx.fillStyle = row.atm ? 'rgba(38,166,154,0.85)' : 'rgba(38,166,154,0.55)'
+    ctx.fillRect(rightEdge - ceW - peW - 2, yp, peW, barH)
+
+    // CE bar (red) — closer to right
+    ctx.fillStyle = row.atm ? 'rgba(239,83,80,0.85)' : 'rgba(239,83,80,0.55)'
+    ctx.fillRect(rightEdge - ceW, yp, ceW, barH)
+
+    // ATM highlight line
+    if (row.atm) {
+      ctx.strokeStyle = 'rgba(109,124,246,0.55)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 3])
+      ctx.beginPath(); ctx.moveTo(0, Math.round(y)); ctx.lineTo(rightEdge - ceW - peW - 6, Math.round(y)); ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    // Strike label
+    const isKeyStrike = row.atm || Math.abs(row.strike - Math.round(spot / 100) * 100) % 200 === 0
+    if (isKeyStrike && barH >= 6) {
+      const lblX = rightEdge - ceW - peW - labelW - 8
+      if (lblX > 0) {
+        ctx.fillStyle = row.atm ? 'rgba(109,124,246,0.75)' : 'rgba(255,165,0,0.65)'
+        ctx.fillRect(lblX, yp + (barH - 14) / 2, labelW, 14)
+        ctx.fillStyle = '#fff'
+        ctx.font = '9.5px system-ui'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(row.strike.toLocaleString(), lblX + labelW / 2, yp + barH / 2)
+      }
+    }
+  })
+
+  // Legend
+  ctx.font = '9px system-ui'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = 'rgba(239,83,80,0.8)'; ctx.fillRect(8, H - 18, 8, 8)
+  ctx.fillStyle = '#94a3b8'; ctx.fillText('CE OI', 20, H - 14)
+  ctx.fillStyle = 'rgba(38,166,154,0.8)'; ctx.fillRect(60, H - 18, 8, 8)
+  ctx.fillText('PE OI', 72, H - 14)
 }
 
 // ── Top bar ──────────────────────────────────────────────────
@@ -424,6 +609,8 @@ const _optionMetricState = {
   maxPain: 23700,
   atmIv: 16.85,
   ivPercentile: 77,
+  gex: 2.3,
+  gammaRegime: 68,
 }
 
 function startOptionsMetricTicker() {
@@ -447,6 +634,10 @@ function updateRandomOptionMetric() {
     next = clampNumber(previous + randomStep([-0.35, -0.2, 0.2, 0.35]), 11.5, 24.5)
   } else if (key === 'ivPercentile') {
     next = clampNumber(previous + randomStep([-3, -2, 2, 3]), 5, 95)
+  } else if (key === 'gex') {
+    next = clampNumber(+(previous + randomStep([-0.4, -0.2, 0.2, 0.4])).toFixed(1), -8, 8)
+  } else if (key === 'gammaRegime') {
+    next = clampNumber(previous + randomStep([-4, -2, 2, 4]), 5, 95)
   }
 
   _optionMetricState[key] = next
@@ -472,10 +663,12 @@ function initHeaderPreferences() {
     const savedMetrics = JSON.parse(localStorage.getItem('headerEnabledMetrics') || 'null')
     if (savedMetrics && typeof savedMetrics === 'object') {
       _enabledOptionMetrics = {
-        pcr: savedMetrics.pcr !== false,
-        maxPain: savedMetrics.maxPain !== false,
-        atmIv: savedMetrics.atmIv !== false,
-        ivPercentile: savedMetrics.ivPercentile !== false,
+        pcr:          savedMetrics.pcr          !== false,
+        maxPain:      savedMetrics.maxPain       !== false,
+        atmIv:        savedMetrics.atmIv         !== false,
+        ivPercentile: savedMetrics.ivPercentile  !== false,
+        gex:          savedMetrics.gex           === true,
+        gammaRegime:  savedMetrics.gammaRegime   === true,
       }
     }
   } catch {}
@@ -524,7 +717,10 @@ function renderIndicesMenuBody() {
       ${HEADER_INDEX_ITEMS.map(item => buildIndicesRowMarkup(item)).join('')}
     </section>
     <section class="indices-section" aria-label="Signal modules">
-      <div class="indices-section-title">Signal Modules</div>
+      <div class="indices-section-title">
+        Signal Modules
+        <span class="signal-count-badge${Object.values(_enabledOptionMetrics).filter(Boolean).length >= SIGNAL_MAX ? ' at-max' : ''}">${Object.values(_enabledOptionMetrics).filter(Boolean).length}/${SIGNAL_MAX}</span>
+      </div>
       <div class="signal-toggle-list">
         ${Object.entries(OPTION_METRIC_CONFIG).map(([key, config]) => buildSignalToggleMarkup(key, config)).join('')}
       </div>
@@ -550,14 +746,17 @@ function buildIndicesRowMarkup(item) {
 function buildSignalToggleMarkup(key, config) {
   const value = _optionMetricState[key]
   const active = _enabledOptionMetrics[key] !== false
+  const enabledCount = Object.values(_enabledOptionMetrics).filter(Boolean).length
+  const atLimit = !active && enabledCount >= SIGNAL_MAX
   return `
-    <button class="signal-toggle-btn${active ? ' active' : ''}" type="button" data-metric-toggle="${key}" aria-pressed="${active ? 'true' : 'false'}">
+    <button class="signal-toggle-btn${active ? ' active' : ''}${atLimit ? ' at-limit' : ''}" type="button" data-metric-toggle="${key}" aria-pressed="${active ? 'true' : 'false'}" ${atLimit ? `title="Disable another signal to enable ${config.label}"` : ''}>
       <svg class="signal-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">${config.icon}</svg>
       <span class="signal-meta">
         <span class="signal-name">${config.label}</span>
         <span class="signal-value">${config.format(value)}</span>
       </span>
       <span class="signal-toggle-knob" aria-hidden="true"></span>
+      ${atLimit ? '<span class="signal-limit-badge">4 max</span>' : ''}
     </button>
   `
 }
@@ -576,6 +775,10 @@ function renderOptionsMetrics() {
     valueEl.dataset.value = String(value)
     chip.dataset.tooltip = config.tooltip(value)
     chip.classList.toggle('is-high', key === 'ivPercentile' && value >= 70)
+    chip.classList.toggle('gex-pos', key === 'gex' && value >= 0.5)
+    chip.classList.toggle('gex-neg', key === 'gex' && value <= -0.5)
+    chip.classList.toggle('regime-pos', key === 'gammaRegime' && value >= 60)
+    chip.classList.toggle('regime-neg', key === 'gammaRegime' && value <= 40)
     chip.style.display = _enabledOptionMetrics[key] === false ? 'none' : ''
   })
 
@@ -598,8 +801,14 @@ function renderOptionMetric(key, previous, next) {
   valueEl.dataset.value = String(next)
   chip.dataset.tooltip = config.tooltip(next)
 
-  if (key === 'ivPercentile') {
-    chip.classList.toggle('is-high', next >= 70)
+  if (key === 'ivPercentile') chip.classList.toggle('is-high', next >= 70)
+  if (key === 'gex') {
+    chip.classList.toggle('gex-pos', next >= 0.5)
+    chip.classList.toggle('gex-neg', next <= -0.5)
+  }
+  if (key === 'gammaRegime') {
+    chip.classList.toggle('regime-pos', next >= 60)
+    chip.classList.toggle('regime-neg', next <= 40)
   }
 
   renderIndicesMenuBody()
@@ -616,6 +825,12 @@ function ivPercentileLabel(value) {
   if (value >= 50) return 'High'
   if (value >= 30) return 'Moderate'
   return 'Low'
+}
+
+function gammaRegimeLabel(value) {
+  if (value >= 60) return 'Positive'
+  if (value <= 40) return 'Negative'
+  return 'Transition'
 }
 
 function wireIndicesMenu() {
@@ -693,9 +908,9 @@ function wireIndicesMenu() {
     if (e.key === 'Escape') close()
   })
 
-  let savedMode = 'manual'
-  try { savedMode = localStorage.getItem('indexTickerMode') || 'manual' } catch {}
-  setMode(savedMode === 'auto' ? 'auto' : 'manual')
+  let savedMode = 'auto'
+  try { savedMode = localStorage.getItem('indexTickerMode') || 'auto' } catch {}
+  setMode(savedMode === 'manual' ? 'manual' : 'auto')
 }
 
 function togglePinnedIndex(indexKey) {
@@ -714,9 +929,26 @@ function togglePinnedIndex(indexKey) {
   renderIndicesMenuBody()
 }
 
+const SIGNAL_MAX = 4
+
 function toggleOptionMetric(metricKey) {
   if (!OPTION_METRIC_CONFIG[metricKey]) return
-  _enabledOptionMetrics[metricKey] = _enabledOptionMetrics[metricKey] === false
+  const isOn = _enabledOptionMetrics[metricKey] !== false
+  if (!isOn) {
+    // Turning ON — check limit
+    const enabledCount = Object.values(_enabledOptionMetrics).filter(Boolean).length
+    if (enabledCount >= SIGNAL_MAX) {
+      // Flash the panel to indicate the limit is reached
+      const list = $('.signal-toggle-list')
+      if (list) {
+        list.classList.remove('signal-limit-flash')
+        void list.offsetWidth
+        list.classList.add('signal-limit-flash')
+      }
+      return
+    }
+  }
+  _enabledOptionMetrics[metricKey] = isOn ? false : true
   persistHeaderPreferences()
   renderOptionsMetrics()
   renderIndicesMenuBody()
@@ -763,20 +995,22 @@ function wireChartVisibility() {
 function _applyChartVisibility() {
   const { ce, underlying: ul, pe } = _visibleCharts
 
+  // Snapshot logical ranges before toggling so scroll position survives the hide/show cycle
+  const savedRanges = getVisibleRanges()
+
   // Toggle chart wrappers
   $('#ce-chart-wrapper')?.classList.toggle('cv-hidden', !ce)
   $('#underlying-chart-wrapper')?.classList.toggle('cv-hidden', !ul)
   $('#pe-chart-wrapper')?.classList.toggle('cv-hidden', !pe)
 
-  // Divider visibility:
-  //   div0 (between ce and ul): show when ce is visible and at least one chart follows
-  //   div1 (between ul and pe): show when ul AND pe are both visible
   const dividers = $$('.chart-divider')
   if (dividers[0]) dividers[0].classList.toggle('cv-hidden', !(ce && (ul || pe)))
   if (dividers[1]) dividers[1].classList.toggle('cv-hidden', !(ul && pe))
 
-  // Resize visible charts after layout reflow
-  requestAnimationFrame(() => requestAnimationFrame(() => resizeCharts()))
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    resizeCharts()
+    restoreVisibleRanges(savedRanges)
+  }))
 }
 
 // ── PnL Switcher (Active ↔ Net swap) ─────────────────────────
@@ -994,9 +1228,20 @@ function applyTradingDefaultsFromModal() {
     triggerPct: parseFloat($('#tp-trigger-pct')?.value) || 25,
   }
   store.applyTradingDefaults(td)
+  // Re-price existing open position SL/TP handles with new percentages
+  store.state.positions.forEach(pos => {
+    const slId = `risk-${pos.id}-sl`
+    const tpId = `risk-${pos.id}-tp`
+    const slPx = riskPriceForPosition(pos, 'sl')
+    const tpPx = riskPriceForPosition(pos, 'tp')
+    if (_priceHandles[slId]) { _priceHandles[slId].price = slPx; updateOrderLine(slId, slPx) }
+    if (_priceHandles[tpId]) { _priceHandles[tpId].price = tpPx; updateOrderLine(tpId, tpPx) }
+  })
 }
 
 // ── Switch Leg Panel ──────────────────────────────────────────
+let _switchingChain = []
+
 function wireSwitchLegPanel() {
   $('#trade-call-switch')?.addEventListener('click', e => {
     e.stopPropagation()
@@ -1012,6 +1257,18 @@ function wireSwitchLegPanel() {
 
   $('#sl-close')?.addEventListener('click', closeSwitchLeg)
 
+  // Tab switching
+  $('#sl-tabs')?.addEventListener('click', e => {
+    const tab = e.target.closest('.sl-tab')
+    if (!tab) return
+    const which = tab.dataset.slTab
+    $$('.sl-tab').forEach(t => t.classList.toggle('active', t === tab))
+    const isChain = which === 'chain'
+    $('#sl-chain-view')?.classList.toggle('hidden', !isChain)
+    $('#sl-surface-view')?.classList.toggle('hidden', isChain)
+    if (!isChain) renderOISurface(_switchingChain, _switchingLeg)
+  })
+
   // Footer "Option chain" link → open left panel
   $('#footer-option-chain')?.addEventListener('click', e => {
     e.preventDefault()
@@ -1021,10 +1278,17 @@ function wireSwitchLegPanel() {
 
 function openSwitchLeg(leg = _switchingLeg, anchor = null) {
   _switchingLeg = leg
+  _oisSide = leg  // CE leg defaults to Calls, PE leg defaults to Puts
   const panel = $('#switch-leg-panel')
   const spot  = priceEngine.getPrice('NIFTY') || currentPrices.NIFTY
-  const chain = buildOptionChain(spot)
-  renderOptionChain(chain, leg)
+  _switchingChain = buildOptionChain(spot)
+
+  // Reset to chain tab
+  $$('.sl-tab').forEach(t => t.classList.toggle('active', t.dataset.slTab === 'chain'))
+  $('#sl-chain-view')?.classList.remove('hidden')
+  $('#sl-surface-view')?.classList.add('hidden')
+
+  renderOptionChain(_switchingChain, leg)
   positionSwitchLegPanel(panel, anchor, leg)
   panel.classList.add('open')
 }
@@ -1050,121 +1314,246 @@ function renderOptionChain(chain, leg = _switchingLeg) {
   const thead = $('#oc-thead')
   const tbody = $('#oc-tbody')
   if (!tbody) return
-  const sideLabel = leg === 'ce' ? 'CALLS' : 'PUTS'
   $('#sl-title').textContent = leg === 'ce' ? 'Switch Call Leg' : 'Switch Put Leg'
   if (thead) {
     thead.innerHTML = `
       <tr>
-        <th class="${leg === 'ce' ? 'calls-col' : 'puts-col'}" colspan="2">${sideLabel}</th>
-        <th class="strike-col">Strike</th>
+        <th colspan="2" class="calls-col">CALLS</th>
+        <th class="strike-col"></th>
+        <th colspan="2" class="puts-col">PUTS</th>
       </tr>
       <tr>
-        <th>OI</th>
-        <th>PRICE / CHG%</th>
+        <th class="th-sub-r">OI / Buildup</th>
+        <th class="th-sub-r">LTP</th>
         <th class="strike-col">STRIKE</th>
+        <th class="th-sub-l">LTP</th>
+        <th class="th-sub-l">OI / Buildup</th>
       </tr>`
   }
+  const maxCeOI = Math.max(...chain.map(r => r.ce.oi), 1)
+  const maxPeOI = Math.max(...chain.map(r => r.pe.oi), 1)
   tbody.innerHTML = chain.map(row => {
-    const atmClass   = row.atm ? 'atm' : ''
-    const side       = leg === 'ce' ? row.ce : row.pe
-    const itmClass   = side.itm ? (leg === 'ce' ? 'itm-call' : 'itm-put') : ''
-    const rowClass   = [atmClass, itmClass].filter(Boolean).join(' ')
-    const chgCls     = side.chgPct >= 0 ? 'up' : 'down'
-    const sideClass  = leg === 'ce' ? 'calls-side' : 'puts-side'
+    const rowCls = row.atm ? 'oc-atm-row' : ''
+    const cePct  = ((row.ce.oi / maxCeOI) * 100).toFixed(1)
+    const pePct  = ((row.pe.oi / maxPeOI) * 100).toFixed(1)
+    const ceB    = _buildupLabel(row.ce)
+    const peB    = _buildupLabel(row.pe)
+    const cChg   = row.ce.chgPct >= 0 ? 'up' : 'down'
+    const pChg   = row.pe.chgPct >= 0 ? 'up' : 'down'
     return `
-      <tr class="${rowClass}" data-strike="${row.strike}" style="cursor:pointer">
-        <td class="oi-col ${sideClass}">${fmtOI(side.oi)}</td>
-        <td class="price-change-col ${sideClass}">
-          <span class="price-col">${side.price.toFixed(2)}</span>
-          <span class="chg-col ${chgCls}">${side.chgPct >= 0 ? '+' : ''}${side.chgPct}%</span>
+      <tr class="${rowCls}" data-strike="${row.strike}">
+        <td class="sw-ce-oi">
+          <div class="oc-oi-fill ce" style="width:${cePct}%"></div>
+          <div class="oc-oi-content">
+            <span class="oc-oi-val">${fmtOI(row.ce.oi)}</span>
+            <span class="oc-buildup ${ceB.cls}">${ceB.label}</span>
+          </div>
         </td>
-        <td class="strike-col">${row.strike}</td>
+        <td class="sw-ce-price">
+          <span class="sw-ltp ${cChg}">${row.ce.price.toFixed(2)}</span>
+        </td>
+        <td class="strike-col ${row.atm ? 'ft-atm' : ''}">
+          ${row.atm ? '<span class="oc-atm-badge">ATM</span>' : ''}
+          <span class="oc-strike-num">${row.strike}</span>
+        </td>
+        <td class="sw-pe-price">
+          <span class="sw-ltp ${pChg}">${row.pe.price.toFixed(2)}</span>
+        </td>
+        <td class="sw-pe-oi">
+          <div class="oc-oi-fill pe" style="width:${pePct}%"></div>
+          <div class="oc-oi-content pe">
+            <span class="oc-oi-val">${fmtOI(row.pe.oi)}</span>
+            <span class="oc-buildup ${peB.cls}">${peB.label}</span>
+          </div>
+        </td>
       </tr>`
   }).join('')
 
   tbody.querySelectorAll('tr').forEach(row => {
     row.addEventListener('click', () => {
-      const strike  = row.dataset.strike
-      const newHist = generateHistory(
-        _switchingLeg === 'ce' ? currentPrices.NIFTY_27500CE : currentPrices.NIFTY_27500PE,
-        0.028, 200, parseInt(strike) % 97 + 1
-      )
-      if (_switchingLeg === 'ce') {
-        switchCEChart(newHist)
-        _ceBase = newHist.at(-1).close
-        $('#ce-chart-price').textContent   = _ceBase.toFixed(2)
-        $('#switch-ce-btn').textContent    = `27 Mar ${strike} ▾`
-        $('#trade-call-switch strong').innerHTML = `${strike} CALL <span>OTM 28</span>`
-      } else {
-        switchPEChart(newHist)
-        _peBase = newHist.at(-1).close
-        $('#pe-chart-price').textContent   = _peBase.toFixed(2)
-        $('#switch-pe-btn').textContent    = `27 Mar ${strike} ▾`
-        $('#trade-put-switch strong').innerHTML = `${strike} PUT <span>OTM 13</span>`
-      }
+      switchBothLegsToStrike(row.dataset.strike)
       closeSwitchLeg()
     })
   })
 }
 
-// ── Draggable timeframe selectors ────────────────────────────
-function wireDraggableTfSelectors() {
-  [
-    { btnId: 'ce-tf-btn',         wrapperId: 'ce-chart-wrapper'         },
-    { btnId: 'underlying-tf-btn', wrapperId: 'underlying-chart-wrapper' },
-    { btnId: 'pe-tf-btn',         wrapperId: 'pe-chart-wrapper'         },
-  ].forEach(({ btnId, wrapperId }) => {
-    const btn     = $(`#${btnId}`)
-    const wrapper = $(`#${wrapperId}`)
-    if (!btn || !wrapper) return
+function renderOISurface(chain, leg = _switchingLeg) {
+  const wrap = $('#sl-surface-view')
+  if (!wrap || !chain.length) return
 
-    let isFloating = false
+  // Expiries — simulated term structure (nearer expiries have more OI at ATM)
+  const EXPIRIES = [
+    { label: '24 Mar', decay: 1.00 },
+    { label: '30 Mar', decay: 0.88 },
+    { label: '07 Apr', decay: 0.74 },
+    { label: '13 Apr', decay: 0.60 },
+    { label: '21 Apr', decay: 0.46 },
+    { label: '28 Apr', decay: 0.34 },
+  ]
 
-    btn.addEventListener('mousedown', e => {
-      if (e.button !== 0) return
-      e.preventDefault()
-      e.stopPropagation()
+  // Show ~7 strikes centered on ATM
+  const atmIdx = chain.findIndex(r => r.atm)
+  const center = atmIdx >= 0 ? atmIdx : Math.floor(chain.length / 2)
+  const start  = Math.max(0, center - 3)
+  const slice  = chain.slice(start, start + 7)
 
-      const bRect = btn.getBoundingClientRect()
-      const wRect = wrapper.getBoundingClientRect()
-
-      if (!isFloating) {
-        isFloating = true
-        const initLeft = bRect.left - wRect.left
-        const initTop  = bRect.top  - wRect.top
-        btn.style.position = 'absolute'
-        btn.style.margin   = '0'
-        btn.style.zIndex   = '10'
-        wrapper.appendChild(btn)
-        btn.style.left = initLeft + 'px'
-        btn.style.top  = initTop  + 'px'
+  // Build surface: expiry × strike → OI values (deterministic seeded mock)
+  const surface = EXPIRIES.map((exp, ei) => ({
+    label: exp.label,
+    cells: slice.map((row, si) => {
+      const distFromAtm = Math.abs(si - (center - start))
+      const bell   = Math.exp(-0.38 * distFromAtm) * exp.decay
+      const seedCe = ((ei * 31 + si * 17 + 5) % 97) / 97
+      const seedPe = ((ei * 13 + si * 41 + 3) % 97) / 97
+      return {
+        strike: row.strike,
+        atm:    row.atm,
+        ce: Math.max(15000, Math.round(650000 * bell * (0.82 + seedCe * 0.36))),
+        pe: Math.max(15000, Math.round(650000 * bell * (0.80 + seedPe * 0.40))),
       }
+    }),
+  }))
 
-      const bRect2 = btn.getBoundingClientRect()
-      const offX   = e.clientX - bRect2.left
-      const offY   = e.clientY - bRect2.top
+  const side    = _oisSide
+  const isCall  = side === 'ce'
+  const heatRGB = isCall ? '38,166,154' : '239,83,80'
 
-      btn.classList.add('dragging')
+  let maxOI = 0
+  surface.forEach(exp => exp.cells.forEach(c => { maxOI = Math.max(maxOI, c[side]) }))
 
-      const onMove = ev => {
-        const wR   = wrapper.getBoundingClientRect()
-        const newL = ev.clientX - wR.left - offX
-        const newT = ev.clientY - wR.top  - offY
-        btn.style.left = Math.max(0, Math.min(newL, wR.width  - btn.offsetWidth))  + 'px'
-        btn.style.top  = Math.max(0, Math.min(newT, wR.height - btn.offsetHeight)) + 'px'
-      }
+  const d   = new Date()
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const ts  = `Updated 15:30:00 ${d.getDate()} ${MON[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`
 
-      const onUp = () => {
-        btn.classList.remove('dragging')
-        document.removeEventListener('mousemove', onMove)
-        document.removeEventListener('mouseup',   onUp)
-      }
+  wrap.innerHTML = `
+    <div class="ois-hm">
+      <div class="ois-hm-controls">
+        <button class="ois-side-btn${isCall ? ' active calls' : ''}" data-ois-side="ce">Calls</button>
+        <button class="ois-side-btn${!isCall ? ' active puts' : ''}" data-ois-side="pe">Puts</button>
+      </div>
+      <div class="ois-hm-scroll">
+        <table class="ois-hm-table">
+          <thead>
+            <tr>
+              <th class="ois-hm-exp-th"></th>
+              ${slice.map(r => `<th class="ois-hm-strike-th${r.atm ? ' atm' : ''}">${(r.strike / 1000).toFixed(0)}K</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${surface.map(exp => `
+              <tr>
+                <td class="ois-hm-exp-cell">${exp.label}</td>
+                ${exp.cells.map(c => {
+                  const oi    = c[side]
+                  const alpha = ((oi / maxOI) * 0.72).toFixed(2)
+                  return `<td class="ois-hm-cell${c.atm ? ' atm' : ''}"
+                    style="background:rgba(${heatRGB},${alpha})"
+                    data-strike="${c.strike}">${fmtOI(oi)}</td>`
+                }).join('')}
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="ois-hm-footer">
+        <div class="ois-legend">
+          <span class="ois-legend-label">Low OI</span>
+          <div class="ois-legend-bar" style="background:linear-gradient(to right,rgba(${heatRGB},0.06),rgba(${heatRGB},0.75))"></div>
+          <span class="ois-legend-label">High OI</span>
+        </div>
+        <span class="ois-hm-ts">${ts}</span>
+      </div>
+    </div>
+  `
 
-      document.addEventListener('mousemove', onMove)
-      document.addEventListener('mouseup',   onUp)
+  // Calls / Puts toggle
+  wrap.querySelectorAll('.ois-side-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _oisSide = btn.dataset.oisSide
+      renderOISurface(chain, leg)
+    })
+  })
+
+  // Click any cell → switch BOTH charts to that strike simultaneously
+  wrap.querySelectorAll('.ois-hm-cell[data-strike]').forEach(cell => {
+    cell.addEventListener('click', () => {
+      switchBothLegsToStrike(cell.dataset.strike)
+      closeSwitchLeg()
     })
   })
 }
+
+// ── Timeframe selector dropdowns ─────────────────────────────
+const TF_OPTIONS = ['1m', '3m', '5m', '15m', '30m', '1H', '4H', '1D']
+let _activeTfDropdown = null
+
+function wireTfSelectors() {
+  const configs = [
+    { btnId: 'ce-tf-btn' },
+    { btnId: 'underlying-tf-btn' },
+    { btnId: 'pe-tf-btn' },
+  ]
+
+  configs.forEach(({ btnId }) => {
+    const btn = $(`#${btnId}`)
+    if (!btn) return
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      if (_activeTfDropdown?.dataset.for === btnId) {
+        _closeTfDropdown()
+        return
+      }
+      _closeTfDropdown()
+      _openTfDropdown(btn, btnId)
+    })
+  })
+
+  document.addEventListener('click', _closeTfDropdown)
+}
+
+function _openTfDropdown(anchor, btnId) {
+  const current = anchor.textContent.trim().replace('▾', '').trim()
+  const rect    = anchor.getBoundingClientRect()
+
+  const drop = document.createElement('div')
+  drop.className = 'tf-dropdown'
+  drop.dataset.for = btnId
+  drop.dataset.anchor = btnId
+
+  TF_OPTIONS.forEach(tf => {
+    const item = document.createElement('button')
+    item.className = 'tf-dropdown-item' + (tf === current ? ' active' : '')
+    item.textContent = tf
+    item.addEventListener('click', e => {
+      e.stopPropagation()
+      anchor.textContent = tf + ' ▾'
+      _closeTfDropdown()
+    })
+    drop.appendChild(item)
+  })
+
+  // Align below button, flip left if it would overflow right edge
+  const dropWidth = 64
+  let left = rect.left
+  if (left + dropWidth > window.innerWidth - 8) left = rect.right - dropWidth
+  drop.style.top  = `${rect.bottom + 4}px`
+  drop.style.left = `${left}px`
+  document.body.appendChild(drop)
+  anchor.classList.add('open')
+  _activeTfDropdown = drop
+  _activeTfDropdown._anchor = anchor
+}
+
+function _closeTfDropdown() {
+  if (_activeTfDropdown) {
+    _activeTfDropdown._anchor?.classList.remove('open')
+    _activeTfDropdown.remove()
+    _activeTfDropdown = null
+  }
+}
+
+// Keep old name as alias so the boot call still works
+const wireDraggableTfSelectors = wireTfSelectors
 
 // ── Order Overlay ─────────────────────────────────────────────
 function wireOrderOverlay() {
@@ -1564,10 +1953,16 @@ function setPnlStat(id, val, isPos) {
 
 function togglePnlPanel() {
   $('#pnl-panel').classList.toggle('open')
-  if ($('#pnl-panel').classList.contains('open')) closeDepthPanel()
+  const isOpen = $('#pnl-panel').classList.contains('open')
+  $('#right-sidebar-tab')?.classList.toggle('active', isOpen)
+  if (isOpen) closeDepthPanel()
   updateCompactMode()
 }
-function closePnlPanel() { $('#pnl-panel').classList.remove('open'); updateCompactMode() }
+function closePnlPanel() {
+  $('#pnl-panel').classList.remove('open')
+  $('#right-sidebar-tab')?.classList.remove('active')
+  updateCompactMode()
+}
 
 // ── Depth Panel ────────────────────────────────────────────────
 const DEPTH_TICK   = 0.25
@@ -1584,7 +1979,7 @@ function _updateTpaPrice(side, price) {
 }
 
 // ── Trade Presets ──────────────────────────────────────────
-let _tradePreset = 'default'
+let _tradePreset = 'buy-only'
 
 const _TPA_CFG = [
   { side: 'ce', instrId: 'NIFTY_27500CE', panelSel: '.trade-panel-call' },
@@ -1661,20 +2056,21 @@ function wireTradePresets() {
       }
     })
 
-    // ── SL button → open SL sub-form ──
-    $(`#${side}-tpa-sl-open`)?.addEventListener('click', () => {
+    // Open combined SL+TP form (both SL and TP buttons share the same form)
+    const _openRiskForm = (focusField) => {
       $(`#${side}-tpa-main`)?.classList.add('hidden')
-      const form = $(`#${side}-tpa-sl-form`)
-      form?.classList.remove('hidden')
-      // Pre-fill with a default SL price
+      $(`#${side}-tpa-sl-form`)?.classList.remove('hidden')
       const pos = store.state.positions.find(p => p.instrumentId === instrId && p.side === _presetSide())
-      const inp = $(`#${side}-tpa-sl-input`)
-      if (pos && inp && !inp.value) {
+      const slInp = $(`#${side}-tpa-sl-input`)
+      if (pos && slInp && !slInp.value) {
         const defaultSl = roundToTick(pos.avgPrice * (1 - (store.tradingDefaults.sl?.triggerPct ?? 1) / 100))
-        inp.value = defaultSl.toFixed(2)
+        slInp.value = defaultSl.toFixed(2)
       }
-      $(`#${side}-tpa-sl-input`)?.focus()
-    })
+      $(`#${side}-tpa-${focusField}-input`)?.focus()
+    }
+
+    $(`#${side}-tpa-sl-open`)?.addEventListener('click', () => _openRiskForm('sl'))
+    $(`#${side}-tpa-tp-open`)?.addEventListener('click', () => _openRiskForm('tp'))
 
     $(`#${side}-tpa-sl-back`)?.addEventListener('click', () => {
       $(`#${side}-tpa-sl-form`)?.classList.add('hidden')
@@ -1690,65 +2086,45 @@ function wireTradePresets() {
         ...store.tradingDefaults,
         sl: { ...store.tradingDefaults.sl, trailing: !isOn },
       })
-      // Sync the other panel's trail button to the same state
       _TPA_CFG.forEach(cfg => {
         const other = $(`#${cfg.side}-tpa-trail`)
         if (other) other.dataset.on = isOn ? 'false' : 'true'
       })
     })
 
-    // Set SL
+    // Set — applies whichever of SL / TP have a value entered
     $(`#${side}-tpa-set-sl`)?.addEventListener('click', () => {
-      const inp = $(`#${side}-tpa-sl-input`)
-      const slPrice = parseFloat(inp?.value)
-      if (!slPrice || isNaN(slPrice)) return
-      const pos = store.state.positions.find(p => p.instrumentId === instrId && p.side === _presetSide())
+      const pos = store.state.positions.find(p => p.instrumentId === instrId)
       if (!pos) return
-      const slId = `risk-${pos.id}-sl`
-      const chartId = side
-      drawOrderLine(chartId, slId, slPrice, '#EF4444', 'SL')
-      if (_priceHandles[slId]) { _priceHandles[slId].price = slPrice; _priceHandles[slId].dormant = false }
-      else _priceHandles[slId] = { price: slPrice, dormant: false }
+      const slPrice = parseFloat($(`#${side}-tpa-sl-input`)?.value)
+      const tpPrice = parseFloat($(`#${side}-tpa-tp-input`)?.value)
+      if (!isNaN(slPrice) && slPrice > 0) {
+        const slId = `risk-${pos.id}-sl`
+        drawOrderLine(side, slId, slPrice, '#EF4444', 'SL')
+        if (_priceHandles[slId]) { _priceHandles[slId].price = slPrice; _priceHandles[slId].dormant = false }
+        else _priceHandles[slId] = { price: slPrice, dormant: false }
+      }
+      if (!isNaN(tpPrice) && tpPrice > 0) {
+        const tpId = `risk-${pos.id}-tp`
+        drawOrderLine(side, tpId, tpPrice, '#00C853', 'TP')
+        if (_priceHandles[tpId]) { _priceHandles[tpId].price = tpPrice; _priceHandles[tpId].dormant = false }
+        else _priceHandles[tpId] = { price: tpPrice, dormant: false }
+      }
       $(`#${side}-tpa-sl-form`)?.classList.add('hidden')
-      $(`#${side}-tpa-main`)?.classList.remove('hidden')
-    })
-
-    // ── TP button → open TP sub-form ──
-    $(`#${side}-tpa-tp-open`)?.addEventListener('click', () => {
-      $(`#${side}-tpa-main`)?.classList.add('hidden')
-      $(`#${side}-tpa-tp-form`)?.classList.remove('hidden')
-      $(`#${side}-tpa-tp-input`)?.focus()
-    })
-
-    $(`#${side}-tpa-tp-back`)?.addEventListener('click', () => {
-      $(`#${side}-tpa-tp-form`)?.classList.add('hidden')
-      $(`#${side}-tpa-main`)?.classList.remove('hidden')
-    })
-
-    // Set TP
-    $(`#${side}-tpa-set-tp`)?.addEventListener('click', () => {
-      const inp = $(`#${side}-tpa-tp-input`)
-      const tpPrice = parseFloat(inp?.value)
-      if (!tpPrice || isNaN(tpPrice)) return
-      const pos = store.state.positions.find(p => p.instrumentId === instrId && p.side === _presetSide())
-      if (!pos) return
-      const tpId = `risk-${pos.id}-tp`
-      const chartId = side
-      drawOrderLine(chartId, tpId, tpPrice, '#00C853', 'TP')
-      if (_priceHandles[tpId]) { _priceHandles[tpId].price = tpPrice; _priceHandles[tpId].dormant = false }
-      else _priceHandles[tpId] = { price: tpPrice, dormant: false }
-      $(`#${side}-tpa-tp-form`)?.classList.add('hidden')
       $(`#${side}-tpa-main`)?.classList.remove('hidden')
     })
 
     // ── Exit ──
     $(`#${side}-tpa-exit`)?.addEventListener('click', () => {
-      const pos = store.state.positions.find(p => p.instrumentId === instrId && p.side === _presetSide())
+      const pos = store.state.positions.find(p => p.instrumentId === instrId)
       if (pos) store.squareOff(pos.id, 'Smart exit')
     })
   })
 
   store.on('positions:updated', _syncTpaBars)
+
+  // Apply the initial preset so #trade-module gets the right class on load
+  _applyTradePreset(_tradePreset)
 }
 
 function _toggleTpaMode(side) {
@@ -2036,12 +2412,14 @@ function wireCrosshairButtons() {
       _chartOverlayContainer.querySelectorAll('.chart-order-popup').forEach(p => p.classList.add('hidden'))
       const rect = chartEl.getBoundingClientRect()
       const btnRect = btn.getBoundingClientRect()
-      const popupW = 286
-      let left = btnRect.left - popupW - 8
-      if (left < rect.left + 8) left = btnRect.right + 8
-      left = Math.max(72, Math.min(left, window.innerWidth - popupW - 16))
-      let top = btnRect.top - 10
-      top = Math.max(rect.top + 8, Math.min(top, rect.bottom - 178))
+      const popupW = 220
+      const popupH = 186
+      // Center horizontally on the button; appear just below it
+      let left = Math.round(btnRect.left + btnRect.width / 2 - popupW / 2)
+      left = Math.max(rect.left + 4, Math.min(left, window.innerWidth - popupW - 8))
+      let top = btnRect.bottom + 6
+      if (top + popupH > window.innerHeight - 8) top = btnRect.top - popupH - 6
+      top = Math.max(rect.top + 4, top)
       popup.style.top   = top + 'px'
       popup.style.left  = left + 'px'
       popup.style.width = popupW + 'px'
@@ -2343,9 +2721,6 @@ function createPositionRiskHandles(pos, chartId) {
         if (h) { h.price = nextPrice; h.dormant = false }
       },
     })
-    // Mark dormant: visual reference only until user drags to set execution price.
-    // Keeping the entry in _priceHandles so removePriceHandle can clean up the DOM element.
-    if (_priceHandles[id]) _priceHandles[id].dormant = true
   })
 }
 
@@ -2359,6 +2734,7 @@ function _checkRiskLevels(instrumentId, price) {
       const slHit = pos.side === 'BUY' ? price <= slHandle.price : price >= slHandle.price
       if (slHit) {
         pos._squaringOff = true
+        showToast(`SL hit @ ₹${price.toFixed(2)} — position closed`, 'danger')
         setTimeout(() => store.squareOff(pos.id, 'SL triggered'), 0)
         continue
       }
@@ -2369,10 +2745,37 @@ function _checkRiskLevels(instrumentId, price) {
       const tpHit = pos.side === 'BUY' ? price >= tpHandle.price : price <= tpHandle.price
       if (tpHit) {
         pos._squaringOff = true
+        showToast(`TP hit @ ₹${price.toFixed(2)} — position closed`, 'success')
         setTimeout(() => store.squareOff(pos.id, 'TP triggered'), 0)
       }
     }
   }
+}
+
+// ── Drawing Toolbar ──────────────────────────────────────────
+function wireDrawingToolbar() {
+  const toolbar = $('#drawing-toolbar')
+  if (!toolbar) return
+
+  toolbar.addEventListener('click', e => {
+    const btn = e.target.closest('.dt-btn')
+    if (!btn) return
+    const tool = btn.dataset.tool
+
+    // Stateful toggles — don't change the selected drawing tool
+    if (tool === 'sync') {
+      btn.classList.toggle('dt-sync-btn')
+      return
+    }
+    if (tool === 'lock' || tool === 'hide' || tool === 'trash') return
+
+    // All other tools are mutually exclusive drawing modes
+    $$('.dt-btn', toolbar).forEach(b => b.classList.remove('active'))
+    btn.classList.add('active')
+    if (!['crosshair', 'cursor'].includes(tool)) {
+      showToast(`${btn.title || tool} — drawing tools are UI mockups, not yet wired to chart events`, 'info')
+    }
+  })
 }
 
 function _buildPosOverlayHTML(pos) {
@@ -2385,4 +2788,542 @@ function _buildPosOverlayHTML(pos) {
       <span class="cpo-pnl">₹0.00</span>
       <button class="cpo-exit">Exit</button>
     </div>`
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CHART OVERVIEW PANEL — Analytics Chart Selector
+// ═══════════════════════════════════════════════════════════
+let _covOpen         = false
+let _covSelectedType = 'oi'
+let _covHeroData     = null
+let _covHeroTick     = 0
+
+const COV_CHART_TYPES = [
+  { id: 'oi',               label: 'Open Interest',       icon: `<rect x="4" y="8" width="5" height="20" rx=".5" fill="#ef5350" opacity=".75"/><rect x="10" y="13" width="5" height="15" rx=".5" fill="#26a69a" opacity=".75"/><rect x="18" y="3" width="5" height="25" rx=".5" fill="#ef5350" opacity=".75"/><rect x="24" y="5" width="5" height="23" rx=".5" fill="#26a69a" opacity=".75"/><rect x="32" y="10" width="5" height="18" rx=".5" fill="#ef5350" opacity=".75"/><rect x="38" y="15" width="5" height="13" rx=".5" fill="#26a69a" opacity=".75"/><line x1="2" y1="28" x2="42" y2="28" stroke="#334155" stroke-width="1"/>` },
+  { id: 'oi-change',        label: 'OI Change',           icon: `<line x1="2" y1="16" x2="42" y2="16" stroke="#334155" stroke-width="1"/><rect x="4" y="8" width="5" height="8" rx=".5" fill="#26a69a" opacity=".8"/><rect x="11" y="16" width="5" height="7" rx=".5" fill="#ef5350" opacity=".8"/><rect x="18" y="6" width="5" height="10" rx=".5" fill="#26a69a" opacity=".8"/><rect x="25" y="16" width="5" height="5" rx=".5" fill="#ef5350" opacity=".8"/><rect x="32" y="10" width="5" height="6" rx=".5" fill="#26a69a" opacity=".8"/><rect x="39" y="16" width="4" height="9" rx=".5" fill="#ef5350" opacity=".8"/>` },
+  { id: 'multi-strike-oi',  label: 'Multi-Strike OI',     icon: `<polyline points="2,22 10,18 18,14 26,10 34,13 42,8" stroke="#ef5350" stroke-width="1.5" fill="none"/><polyline points="2,24 10,21 18,23 26,17 34,13 42,18" stroke="#26a69a" stroke-width="1.5" fill="none"/><polyline points="2,27 10,25 18,21 26,19 34,22 42,16" stroke="#60c0f0" stroke-width="1.5" fill="none"/>` },
+  { id: 'total-oi-spot',    label: 'Total OI vs Spot',    icon: `<path d="M2,22 L10,18 L18,14 L26,18 L34,12 L42,10 L42,28 L2,28 Z" fill="rgba(38,166,154,0.2)"/><polyline points="2,22 10,18 18,14 26,18 34,12 42,10" stroke="#26a69a" stroke-width="1.5" fill="none"/><polyline points="2,25 10,22 18,20 26,16 34,19 42,14" stroke="#60c0f0" stroke-width="1.2" fill="none" stroke-dasharray="2,1"/>` },
+  { id: 'strangle',         label: 'Strangle',            icon: `<path d="M2,8 L14,20 L22,26 L30,20 L42,8" stroke="#ef5350" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><line x1="2" y1="15" x2="42" y2="12" stroke="#60c0f0" stroke-width="1.2"/>` },
+  { id: 'straddle',         label: 'Straddle',            icon: `<path d="M2,10 L16,24 L22,27 L28,24 L42,10" stroke="#f59e0b" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><line x1="2" y1="16" x2="42" y2="13" stroke="#60c0f0" stroke-width="1.2"/>` },
+  { id: 'iv-smile',         label: 'Implied Volatility',  icon: `<path d="M2,5 C10,22 17,28 22,28 C27,28 34,22 42,5" stroke="#f59e0b" stroke-width="2" fill="none" stroke-linecap="round"/><line x1="22" y1="4" x2="22" y2="28" stroke="#334155" stroke-width="1" stroke-dasharray="2,2"/>` },
+  { id: 'multi-strike-iv',  label: 'Multi-Strike IV',     icon: `<polyline points="2,6 10,12 18,16 26,14 34,12 42,8" stroke="#ef5350" stroke-width="1.5" fill="none"/><polyline points="2,12 10,16 18,20 26,18 34,16 42,12" stroke="#f59e0b" stroke-width="1.5" fill="none"/><polyline points="2,18 10,21 18,25 26,23 34,21 42,17" stroke="#26a69a" stroke-width="1.5" fill="none"/>` },
+  { id: 'atm-vol',          label: 'ATM Vol vs Spot',     icon: `<polyline points="2,22 8,18 14,14 20,17 26,12 32,15 38,11 42,13" stroke="#f59e0b" stroke-width="1.8" fill="none"/><polyline points="2,24 8,22 14,20 20,18 26,21 32,17 38,19 42,16" stroke="#60c0f0" stroke-width="1.2" fill="none" stroke-dasharray="2,1"/>` },
+  { id: 'time-lapse-skew',  label: 'Time Lapse Skew',     icon: `<path d="M2,6 C10,20 17,26 22,27 C27,26 34,20 42,6" stroke="#ef5350" stroke-width="1.5" fill="none" opacity=".35"/><path d="M2,8 C10,21 17,26 22,26 C27,26 34,21 42,8" stroke="#f59e0b" stroke-width="1.5" fill="none" opacity=".6"/><path d="M2,12 C10,23 17,27 22,28 C27,27 34,23 42,12" stroke="#26a69a" stroke-width="2" fill="none"/>` },
+  { id: 'volume',           label: 'Volume',              icon: `<rect x="3" y="14" width="4" height="14" rx=".5" fill="#26a69a" opacity=".8"/><rect x="8" y="19" width="4" height="9" rx=".5" fill="#ef5350" opacity=".8"/><rect x="15" y="9" width="4" height="19" rx=".5" fill="#26a69a" opacity=".8"/><rect x="20" y="13" width="4" height="15" rx=".5" fill="#ef5350" opacity=".8"/><rect x="27" y="7" width="4" height="21" rx=".5" fill="#26a69a" opacity=".8"/><rect x="32" y="14" width="4" height="14" rx=".5" fill="#ef5350" opacity=".8"/><rect x="39" y="16" width="4" height="12" rx=".5" fill="#26a69a" opacity=".8"/><line x1="1" y1="28" x2="43" y2="28" stroke="#334155" stroke-width="1"/>` },
+  { id: 'vol-change',       label: 'Volume Change',       icon: `<line x1="2" y1="16" x2="42" y2="16" stroke="#334155" stroke-width="1"/><rect x="3" y="10" width="5" height="6" rx=".5" fill="#26a69a" opacity=".8"/><rect x="10" y="16" width="5" height="8" rx=".5" fill="#ef5350" opacity=".8"/><rect x="17" y="7" width="5" height="9" rx=".5" fill="#26a69a" opacity=".8"/><rect x="24" y="16" width="5" height="4" rx=".5" fill="#ef5350" opacity=".8"/><rect x="31" y="9" width="5" height="7" rx=".5" fill="#26a69a" opacity=".8"/><rect x="38" y="16" width="4" height="10" rx=".5" fill="#ef5350" opacity=".8"/>` },
+  { id: 'multi-strike-vol', label: 'Multi-Strike Volume', icon: `<polyline points="2,26 10,22 18,20 26,16 34,14 42,10" stroke="#ef5350" stroke-width="1.5" fill="none"/><polyline points="2,24 10,20 18,22 26,18 34,15 42,17" stroke="#26a69a" stroke-width="1.5" fill="none"/><polyline points="2,28 10,26 18,24 26,22 34,21 42,19" stroke="#60c0f0" stroke-width="1.5" fill="none"/>` },
+  { id: 'pcr',              label: 'Put Call Ratio',      icon: `<polyline points="2,20 8,16 14,12 20,18 26,10 32,14 38,12 42,15" stroke="#a78bfa" stroke-width="2" fill="none"/><polyline points="2,22 8,20 14,18 20,16 26,19 32,15 38,17 42,14" stroke="#60c0f0" stroke-width="1.2" fill="none" stroke-dasharray="2,1"/>` },
+  { id: 'gamma-exp',        label: 'Gamma Exposure',      icon: `<line x1="2" y1="20" x2="42" y2="20" stroke="#334155" stroke-width="1"/><rect x="3" y="22" width="4" height="6" rx=".5" fill="#ef5350" opacity=".7"/><rect x="9" y="16" width="4" height="4" rx=".5" fill="#ef5350" opacity=".7"/><rect x="15" y="10" width="4" height="10" rx=".5" fill="#26a69a" opacity=".8"/><rect x="21" y="6" width="4" height="14" rx=".5" fill="#26a69a" opacity=".9"/><rect x="27" y="10" width="4" height="10" rx=".5" fill="#26a69a" opacity=".8"/><rect x="33" y="16" width="4" height="4" rx=".5" fill="#ef5350" opacity=".7"/><rect x="39" y="22" width="4" height="6" rx=".5" fill="#ef5350" opacity=".7"/>` },
+  { id: 'delta-profile',    label: 'Delta Profile',       icon: `<path d="M2,27 C8,27 12,24 16,20 C20,16 24,10 28,7 C32,4 36,3 42,3" stroke="#60c0f0" stroke-width="2" fill="none" stroke-linecap="round"/><line x1="22" y1="2" x2="22" y2="28" stroke="#334155" stroke-width="1" stroke-dasharray="2,2"/><line x1="2" y1="15" x2="42" y2="15" stroke="#334155" stroke-width="1" stroke-dasharray="2,2"/>` },
+]
+
+function wireChartOverview() {
+  $('#nav-chart-overview')?.addEventListener('click', e => {
+    e.preventDefault()
+    _covOpen ? closeChartOverview() : openChartOverview()
+  })
+  $('#cov-close')?.addEventListener('click', closeChartOverview)
+}
+
+function wireChartToast() {
+  let _toastTimer = null
+  function showTvToast() {
+    const toast = $('#tv-toast')
+    if (!toast) return
+    clearTimeout(_toastTimer)
+    toast.classList.add('show')
+    _toastTimer = setTimeout(() => toast.classList.remove('show'), 1800)
+  }
+  $$('.dt-btn').forEach(btn => btn.addEventListener('click', showTvToast))
+  $$('.tf-selector').forEach(btn => btn.addEventListener('click', showTvToast))
+  ;['ce-menu-btn', 'underlying-menu-btn', 'pe-menu-btn'].forEach(id => {
+    $(`#${id}`)?.addEventListener('click', showTvToast)
+  })
+}
+
+function openChartOverview() {
+  _covOpen = true
+  _initCovHeroData()
+  renderCovPanel()
+  const panel = $('#chart-overview-panel')
+  panel.classList.add('open')
+  $('#nav-chart-overview').classList.add('active')
+  // Redraw after CSS transition so canvas.offsetWidth is correct
+  setTimeout(() => { _drawCovHero(); _drawAllCovMiniCharts() }, 270)
+}
+
+function closeChartOverview() {
+  _covOpen = false
+  $('#chart-overview-panel')?.classList.remove('open')
+  $('#nav-chart-overview')?.classList.remove('active')
+}
+
+function _initCovHeroData() {
+  if (_covHeroData) return
+  const spot   = priceEngine.getPrice('NIFTY') || currentPrices.NIFTY
+  const chain  = buildOptionChain(spot)
+  const bars   = generateHistory(spot, 0.0008, 60, 555)
+  const atmIdx = chain.findIndex(r => r.atm)
+  const center = atmIdx >= 0 ? atmIdx : Math.floor(chain.length / 2)
+  const strikes = chain.slice(Math.max(0, center - 4), center + 5)
+  _covHeroData = { spot, chain, bars, strikes }
+}
+
+function renderCovPanel() {
+  const body = $('#cov-body')
+  if (!body) return
+  const sel = COV_CHART_TYPES.find(t => t.id === _covSelectedType) || COV_CHART_TYPES[0]
+  body.innerHTML = `
+    <div class="cov-hero">
+      <div class="cov-hero-top">
+        <span class="cov-hero-name" id="cov-hero-name">${sel.label}</span>
+        <span class="cov-hero-instr">NIFTY 50</span>
+      </div>
+      <canvas class="cov-hero-canvas" id="cov-hero-canvas"></canvas>
+    </div>
+    <div class="cov-section-label">CHART TYPE</div>
+    <div class="cov-type-grid" id="cov-type-grid">
+      ${COV_CHART_TYPES.map(t => `
+        <button class="cov-type-card${t.id === _covSelectedType ? ' active' : ''}" data-cov-type="${t.id}" type="button">
+          <canvas class="cov-type-canvas" data-type="${t.id}"></canvas>
+          <span class="cov-type-label">${t.label}</span>
+        </button>`).join('')}
+    </div>`
+  $('#cov-type-grid')?.addEventListener('click', e => {
+    const card = e.target.closest('.cov-type-card')
+    if (!card) return
+    _selectCovType(card.dataset.covType)
+  })
+  requestAnimationFrame(() => {
+    _drawCovHero()
+    _drawAllCovMiniCharts()
+  })
+}
+
+function _drawAllCovMiniCharts() {
+  if (!_covHeroData) return
+  $$('.cov-type-canvas').forEach(canvas => {
+    const type = canvas.dataset.type
+    if (!type) return
+    const dpr = window.devicePixelRatio || 1
+    const W   = canvas.offsetWidth  || 120
+    const H   = canvas.offsetHeight || 52
+    canvas.width  = W * dpr
+    canvas.height = H * dpr
+    const ctx = canvas.getContext('2d')
+    ctx.scale(dpr, dpr)
+    ctx.clearRect(0, 0, W, H)
+    _covDrawType(ctx, W, H, type)
+  })
+}
+
+function _selectCovType(id) {
+  _covSelectedType = id
+  $$('.cov-type-card').forEach(c => c.classList.toggle('active', c.dataset.covType === id))
+  const nameEl = $('#cov-hero-name')
+  const sel    = COV_CHART_TYPES.find(t => t.id === id)
+  if (nameEl && sel) nameEl.textContent = sel.label
+  _drawCovHero()
+}
+
+function _drawCovHero() {
+  const canvas = $('#cov-hero-canvas')
+  if (!canvas || !_covHeroData) return
+  const dpr = window.devicePixelRatio || 1
+  const W   = canvas.offsetWidth  || 282
+  const H   = canvas.offsetHeight || 180
+  canvas.width  = W * dpr
+  canvas.height = H * dpr
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, W, H)
+  _covDrawType(ctx, W, H, _covSelectedType)
+}
+
+function _covDrawType(ctx, W, H, type) {
+  if (!_covHeroData) return
+  const { chain, bars, strikes } = _covHeroData
+  const close = bars.map(b => b.close)
+  const mini  = H < 80  // suppress legend & ATM lines on tiny cards
+
+  const dispatch = {
+    'oi':               () => _covHero_oi(ctx, W, H, chain, mini),
+    'oi-change':        () => _covHero_oiChange(ctx, W, H, chain, mini),
+    'multi-strike-oi':  () => _covHero_multiLine(ctx, W, H, strikes.map((r, i) => ({ color: _covStrikeColor(i), values: _covFakeTimeSeries(bars, r.ce.oi, 0.008, i * 31) })), mini),
+    'total-oi-spot':    () => _covHero_totalOIvsSpot(ctx, W, H, chain, close, mini),
+    'strangle':         () => _covHero_strangle(ctx, W, H, bars, false, mini),
+    'straddle':         () => _covHero_strangle(ctx, W, H, bars, true, mini),
+    'iv-smile':         () => _covHero_ivSmile(ctx, W, H, chain, mini),
+    'multi-strike-iv':  () => _covHero_multiLine(ctx, W, H, strikes.slice(0, 4).map((r, i) => ({ color: _covStrikeColor(i), values: _covFakeTimeSeries(bars, r.ce.iv, 0.012, i * 17) })), mini),
+    'atm-vol':          () => _covHero_atmVol(ctx, W, H, bars, mini),
+    'time-lapse-skew':  () => _covHero_timeLapseSkew(ctx, W, H, chain, mini),
+    'volume':           () => _covHero_volume(ctx, W, H, bars, false, mini),
+    'vol-change':       () => _covHero_volume(ctx, W, H, bars, true, mini),
+    'multi-strike-vol': () => _covHero_multiLine(ctx, W, H, strikes.map((r, i) => ({ color: _covStrikeColor(i), values: _covFakeTimeSeries(bars, r.ce.oi * 0.001, 0.02, i * 23) })), mini),
+    'pcr':              () => _covHero_pcr(ctx, W, H, bars, chain, mini),
+    'gamma-exp':        () => _covHero_gammaExp(ctx, W, H, chain, mini),
+    'delta-profile':    () => _covHero_deltaProfile(ctx, W, H, chain, mini),
+  }
+  ;(dispatch[type] || dispatch['oi'])()
+}
+
+function _covStrikeColor(i) {
+  return ['#ef5350','#26a69a','#60c0f0','#f59e0b','#a78bfa','#fb923c'][i % 6]
+}
+
+function _covFakeTimeSeries(bars, baseVal, vol, seed) {
+  let v = baseVal
+  const mk = (s) => { let x = s >>> 0; return () => { x += 0x6D2B79F5; let t = Math.imul(x^(x>>>15),1|x); t^=t+Math.imul(t^(t>>>7),61|t); return ((t^(t>>>14))>>>0)/4294967296 } }
+  const rng = mk(seed || 1)
+  return bars.map(() => { v = Math.max(v * 0.1, v * (1 + (rng() - 0.5) * vol * 2)); return v })
+}
+
+function _covScaleY(values, H, padT = 8, padB = 12) {
+  const min = Math.min(...values), max = Math.max(...values)
+  const range = max - min || 1
+  const innerH = H - padT - padB
+  return { min, max, range, toY: v => padT + innerH - ((v - min) / range) * innerH }
+}
+
+function _covHero_oi(ctx, W, H, chain, mini = false) {
+  const n     = chain.length
+  const padT  = 4, padB = mini ? 4 : 14, padL = 4, padR = 4
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+  const groupW = innerW / n
+  const barW   = Math.max(1, groupW * 0.42)
+  const maxOI  = Math.max(...chain.flatMap(r => [r.ce.oi, r.pe.oi]))
+  const baseY  = padT + innerH
+
+  chain.forEach((row, i) => {
+    const cx = padL + i * groupW + groupW / 2
+    const ceH = (row.ce.oi / maxOI) * innerH
+    const peH = (row.pe.oi / maxOI) * innerH
+    ctx.fillStyle = 'rgba(239,83,80,0.75)'
+    ctx.fillRect(cx - barW - 1, baseY - ceH, barW, ceH)
+    ctx.fillStyle = 'rgba(38,166,154,0.75)'
+    ctx.fillRect(cx + 1, baseY - peH, barW, peH)
+    if (!mini && row.atm) {
+      ctx.strokeStyle = 'rgba(109,124,246,0.6)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([2, 2])
+      ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, baseY); ctx.stroke()
+      ctx.setLineDash([])
+    }
+  })
+  ctx.beginPath(); ctx.moveTo(padL, baseY); ctx.lineTo(W - padR, baseY)
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.stroke()
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#ef5350', label: 'Calls' }, { color: '#26a69a', label: 'Puts' }])
+}
+
+function _covHero_oiChange(ctx, W, H, chain, mini = false) {
+  const n     = chain.length
+  const padT  = 4, padB = mini ? 4 : 14, padL = 4, padR = 4
+  const innerW = W - padL - padR
+  const innerH = (H - padT - padB) / 2
+  const midY   = padT + innerH
+  const groupW = innerW / n
+  const barW   = Math.max(1, groupW * 0.42)
+  const deltas = chain.map(r => ({ ce: r.ce.oi * (r.ce.chgPct / 100), pe: r.pe.oi * (r.pe.chgPct / 100) }))
+  const maxD   = Math.max(...deltas.flatMap(d => [Math.abs(d.ce), Math.abs(d.pe)]), 1)
+
+  deltas.forEach((d, i) => {
+    const cx = padL + i * groupW + groupW / 2
+    const ceH = (Math.abs(d.ce) / maxD) * innerH
+    const peH = (Math.abs(d.pe) / maxD) * innerH
+    ctx.fillStyle = d.ce >= 0 ? 'rgba(239,83,80,0.75)' : 'rgba(239,83,80,0.4)'
+    ctx.fillRect(cx - barW - 1, d.ce >= 0 ? midY - ceH : midY, barW, ceH)
+    ctx.fillStyle = d.pe >= 0 ? 'rgba(38,166,154,0.75)' : 'rgba(38,166,154,0.4)'
+    ctx.fillRect(cx + 1, d.pe >= 0 ? midY - peH : midY, barW, peH)
+  })
+  ctx.beginPath(); ctx.moveTo(padL, midY); ctx.lineTo(W - padR, midY)
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.stroke()
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#ef5350', label: 'Calls' }, { color: '#26a69a', label: 'Puts' }])
+}
+
+function _covHero_multiLine(ctx, W, H, series, mini = false) {
+  const n = series[0]?.values?.length || 0
+  if (!n) return
+  const allVals = series.flatMap(s => s.values)
+  const { toY }  = _covScaleY(allVals, H, 4, mini ? 4 : 12)
+  const toX      = i => (i / (n - 1)) * W
+
+  series.forEach(({ color, values }) => {
+    ctx.beginPath()
+    ctx.moveTo(toX(0), toY(values[0]))
+    for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(values[i]))
+    ctx.strokeStyle = color
+    ctx.lineWidth   = mini ? 1.2 : 1.5
+    ctx.lineJoin    = 'round'
+    ctx.stroke()
+  })
+}
+
+function _covHero_totalOIvsSpot(ctx, W, H, chain, close, mini = false) {
+  const totalOI = chain.map((_, i) => chain[i].ce.oi + chain[i].pe.oi)
+  const n = close.length
+  const pb = mini ? 4 : 20
+  const { toY: toYoi } = _covScaleY(totalOI, H, 4, pb)
+  const { toY: toYp  } = _covScaleY(close, H, 4, pb)
+  const toX = i => (i / (n - 1)) * W
+
+  const grad = ctx.createLinearGradient(0, 0, 0, H)
+  grad.addColorStop(0, 'rgba(38,166,154,0.25)')
+  grad.addColorStop(1, 'rgba(38,166,154,0)')
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYoi(totalOI[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYoi(totalOI[Math.floor(i / n * totalOI.length)]))
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath()
+  ctx.fillStyle = grad; ctx.fill()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYoi(totalOI[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYoi(totalOI[Math.floor(i / n * totalOI.length)]))
+  ctx.strokeStyle = '#26a69a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYp(close[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYp(close[i]))
+  ctx.strokeStyle = '#60c0f0'; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]); ctx.stroke()
+  ctx.setLineDash([])
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#26a69a', label: 'Total OI' }, { color: '#60c0f0', label: 'NIFTY', dashed: true }])
+}
+
+function _covHero_strangle(ctx, W, H, bars, isStraddle, mini = false) {
+  const n     = bars.length
+  const close = bars.map(b => b.close)
+  const { min: pMin, max: pMax } = _covScaleY(close, H)
+  const mid   = (pMin + pMax) / 2
+  const strat = close.map(p => {
+    const dist = Math.abs(p - mid)
+    return isStraddle ? dist * 0.4 + pMin * 0.01 : Math.max(0, dist - (pMax - pMin) * 0.12) * 0.5 + pMin * 0.008
+  })
+  const allV  = [...close, ...strat]
+  const { toY } = _covScaleY(allV, H, 4, mini ? 4 : 12)
+  const toX     = i => (i / (n - 1)) * W
+  const col     = isStraddle ? '#f59e0b' : '#ef5350'
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(strat[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(strat[i]))
+  ctx.strokeStyle = col; ctx.lineWidth = mini ? 1.4 : 1.8; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(close[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(close[i]))
+  ctx.strokeStyle = '#60c0f0'; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]); ctx.stroke()
+  ctx.setLineDash([])
+  if (!mini) _covLegend(ctx, W, H, [{ color: col, label: isStraddle ? 'STRADDLE' : 'STRANGLE' }, { color: '#60c0f0', label: 'NIFTY', dashed: true }])
+}
+
+function _covHero_ivSmile(ctx, W, H, chain, mini = false) {
+  const ceIVs = chain.map(r => r.ce.iv * 100)
+  const peIVs = chain.map(r => r.pe.iv * 100)
+  const n     = chain.length
+  const pb    = mini ? 4 : 20
+  const { toY } = _covScaleY([...ceIVs, ...peIVs], H, 4, pb)
+  const toX     = i => (i / (n - 1)) * W
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(peIVs[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(peIVs[i]))
+  ctx.strokeStyle = '#26a69a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(ceIVs[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(ceIVs[i]))
+  ctx.strokeStyle = '#ef5350'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke()
+
+  if (!mini) {
+    const atmI = chain.findIndex(r => r.atm)
+    if (atmI >= 0) {
+      ctx.beginPath(); ctx.moveTo(toX(atmI), 4); ctx.lineTo(toX(atmI), H - 14)
+      ctx.strokeStyle = 'rgba(109,124,246,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.stroke()
+      ctx.setLineDash([])
+    }
+    _covLegend(ctx, W, H, [{ color: '#ef5350', label: 'CE IV' }, { color: '#26a69a', label: 'PE IV' }])
+  }
+}
+
+function _covHero_atmVol(ctx, W, H, bars, mini = false) {
+  const close  = bars.map(b => b.close)
+  const atm    = _covFakeTimeSeries(bars, 0.22, 0.015, 77)
+  const atmPct = atm.map(v => v * 100)
+  const pb     = mini ? 4 : 20
+  const { toY: toYiv } = _covScaleY(atmPct, H, 4, pb)
+  const { toY: toYp  } = _covScaleY(close, H, 4, pb)
+  const n = bars.length
+  const toX = i => (i / (n - 1)) * W
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYiv(atmPct[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYiv(atmPct[i]))
+  ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = mini ? 1.4 : 1.8; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYp(close[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYp(close[i]))
+  ctx.strokeStyle = '#60c0f0'; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]); ctx.stroke()
+  ctx.setLineDash([])
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#f59e0b', label: 'ATM IV' }, { color: '#60c0f0', label: 'NIFTY', dashed: true }])
+}
+
+function _covHero_timeLapseSkew(ctx, W, H, chain, mini = false) {
+  const n      = chain.length
+  const TIMES  = [
+    { label: 'Now', alpha: 1.0, color: '#26a69a' },
+    { label: '-1h', alpha: 0.6, color: '#f59e0b' },
+    { label: '-3h', alpha: 0.3, color: '#ef5350' },
+  ]
+  const toX = i => (i / (n - 1)) * W
+  const allIVs = chain.map(r => r.ce.iv * 100)
+  const pb = mini ? 4 : 20
+  const { toY } = _covScaleY(allIVs.map(v => v * 1.25), H, 4, pb)
+  const atmI = chain.findIndex(x => x.atm)
+
+  TIMES.forEach(({ alpha, color }, ti) => {
+    const ivs = chain.map((r, i) => {
+      const dist = Math.abs(i - atmI) / chain.length
+      return r.ce.iv * 100 * (1 + ti * 0.08 * (1 + dist * 2))
+    })
+    ctx.beginPath()
+    ctx.moveTo(toX(0), toY(ivs[0]))
+    for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(ivs[i]))
+    ctx.strokeStyle = color
+    ctx.globalAlpha = alpha
+    ctx.lineWidth   = mini ? (1.6 - ti * 0.3) : (2 - ti * 0.4)
+    ctx.lineJoin    = 'round'
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  })
+  if (!mini) _covLegend(ctx, W, H, TIMES.map(t => ({ color: t.color, label: t.label })))
+}
+
+function _covHero_volume(ctx, W, H, bars, isChange, mini = false) {
+  const n     = bars.length
+  const padT  = 4, padB = mini ? 4 : 14, padL = 4
+  const innerH = (H - padT - padB) * (isChange ? 0.5 : 1)
+  const midY   = padT + (H - padT - padB) * 0.5
+  const baseY  = padT + (H - padT - padB)
+  const barW   = Math.max(1, (W - padL) / n * 0.8)
+  const toX    = i => padL + i * ((W - padL) / n) + ((W - padL) / n) / 2
+
+  const ceVol = bars.map((b, i) => b.volume * (0.4 + 0.3 * Math.sin(i * 0.4)))
+  const peVol = bars.map((b, i) => b.volume * (0.3 + 0.25 * Math.cos(i * 0.5 + 1)))
+  const maxV  = Math.max(...ceVol, ...peVol)
+
+  bars.forEach((_, i) => {
+    const x   = toX(i)
+    const ceh = (ceVol[i] / maxV) * innerH
+    const peh = (peVol[i] / maxV) * innerH
+
+    if (isChange) {
+      const sign = i % 3 !== 1 ? 1 : -1
+      ctx.fillStyle = sign > 0 ? 'rgba(38,166,154,0.75)' : 'rgba(239,83,80,0.75)'
+      ctx.fillRect(x - barW / 2, sign > 0 ? midY - ceh * 0.7 : midY, barW, ceh * 0.7)
+    } else {
+      ctx.fillStyle = 'rgba(38,166,154,0.75)'
+      ctx.fillRect(x - barW / 2 - 1, baseY - ceh, barW / 2, ceh)
+      ctx.fillStyle = 'rgba(239,83,80,0.75)'
+      ctx.fillRect(x + 1, baseY - peh, barW / 2, peh)
+    }
+  })
+
+  const axisY = isChange ? midY : baseY
+  ctx.beginPath(); ctx.moveTo(padL, axisY); ctx.lineTo(W, axisY)
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.stroke()
+  if (!mini && !isChange) _covLegend(ctx, W, H, [{ color: '#26a69a', label: 'Calls' }, { color: '#ef5350', label: 'Puts' }])
+}
+
+function _covHero_pcr(ctx, W, H, bars, chain, mini = false) {
+  const pcrValues = _covFakeTimeSeries(bars, 1.1, 0.02, 99)
+  const close     = bars.map(b => b.close)
+  const n         = bars.length
+  const pb        = mini ? 4 : 20
+  const { toY: toYpcr } = _covScaleY(pcrValues, H, 4, pb)
+  const { toY: toYp   } = _covScaleY(close, H, 4, pb)
+  const toX = i => (i / (n - 1)) * W
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYpcr(pcrValues[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYpcr(pcrValues[i]))
+  ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = mini ? 1.4 : 1.8; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toYp(close[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toYp(close[i]))
+  ctx.strokeStyle = '#60c0f0'; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]); ctx.stroke()
+  ctx.setLineDash([])
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#a78bfa', label: 'PCR' }, { color: '#60c0f0', label: 'NIFTY', dashed: true }])
+}
+
+function _covHero_gammaExp(ctx, W, H, chain, mini = false) {
+  const n      = chain.length
+  const padT   = 4, padB = mini ? 4 : 14, padL = 4, padR = 4
+  const innerW = W - padL - padR
+  const atmI   = chain.findIndex(r => r.atm)
+  const midY   = padT + (H - padT - padB) * 0.5
+  const innerH = (H - padT - padB) * 0.5
+  const groupW = innerW / n
+  const barW   = Math.max(1, groupW * 0.7)
+
+  const gexVals = chain.map((r, i) => {
+    const dist  = (i - atmI) / chain.length
+    const bell  = Math.exp(-18 * dist * dist)
+    const side  = i >= atmI ? 1 : -1
+    return side * bell * r.ce.oi * 0.0001
+  })
+  const maxG = Math.max(...gexVals.map(Math.abs), 1)
+
+  gexVals.forEach((g, i) => {
+    const cx  = padL + i * groupW + groupW / 2
+    const gh  = (Math.abs(g) / maxG) * innerH
+    ctx.fillStyle = g >= 0 ? 'rgba(38,166,154,0.75)' : 'rgba(239,83,80,0.75)'
+    ctx.fillRect(cx - barW / 2, g >= 0 ? midY - gh : midY, barW, gh)
+  })
+  ctx.beginPath(); ctx.moveTo(padL, midY); ctx.lineTo(W - padR, midY)
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.stroke()
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#26a69a', label: 'Long γ' }, { color: '#ef5350', label: 'Short γ' }])
+}
+
+function _covHero_deltaProfile(ctx, W, H, chain, mini = false) {
+  const n       = chain.length
+  const pb      = mini ? 4 : 20
+  const ceDelta = chain.map(r => r.ce.delta)
+  const peDelta = chain.map(r => -Math.abs(r.pe.delta))
+  const allD    = [...ceDelta, ...peDelta]
+  const { toY } = _covScaleY(allD, H, 4, pb)
+  const toX     = i => (i / (n - 1)) * W
+
+  const zeroY = toY(0)
+  ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(W, zeroY)
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.stroke()
+  ctx.setLineDash([])
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(ceDelta[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(ceDelta[i]))
+  ctx.strokeStyle = '#ef5350'; ctx.lineWidth = mini ? 1.4 : 1.8; ctx.lineJoin = 'round'; ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(toX(0), toY(peDelta[0]))
+  for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(peDelta[i]))
+  ctx.strokeStyle = '#26a69a'; ctx.lineWidth = mini ? 1.4 : 1.8; ctx.lineJoin = 'round'; ctx.stroke()
+  if (!mini) _covLegend(ctx, W, H, [{ color: '#ef5350', label: 'Call Δ' }, { color: '#26a69a', label: 'Put Δ' }])
+}
+
+function _covLegend(ctx, W, H, items) {
+  const dotR = 3, gap = 6, itemGap = 14
+  const totalW = items.reduce((s, item) => s + dotR * 2 + gap + ctx.measureText(item.label).width + itemGap, 0)
+  let x = (W - totalW) / 2
+  const y = H - 6
+  ctx.font = '9px system-ui'
+  ctx.textBaseline = 'middle'
+  items.forEach(item => {
+    ctx.fillStyle = item.color
+    ctx.beginPath(); ctx.arc(x + dotR, y, dotR, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = '#94a3b8'
+    ctx.fillText(item.label, x + dotR * 2 + gap, y)
+    x += dotR * 2 + gap + ctx.measureText(item.label).width + itemGap
+  })
 }
