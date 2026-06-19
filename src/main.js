@@ -1,6 +1,8 @@
 // ═══════════════════════════════════════════════════════════
 //  MAIN.JS  —  bootstrap, wire everything together
 // ═══════════════════════════════════════════════════════════
+// Force full page reload on HMR — avoids dead price engine after hot swap
+if (import.meta.hot) import.meta.hot.decline()
 import { initCharts, updateCECandle, updateUnderlyingCandle, updatePECandle, switchCEChart, switchPEChart, drawOrderLine, updateOrderLine, removeOrderLine, drawPositionLine, subscribeChartCrosshair, getPriceY, getPriceFromY, resizeCharts, getVisibleRanges, restoreVisibleRanges } from './charts.js'
 import { priceEngine, currentPrices, INSTRUMENTS, buildOptionChain, generateHistory } from './data.js'
 import * as store from './store.js'
@@ -194,11 +196,6 @@ function seedPriceEngine() {
     if (id === 'NIFTY_27500CE') { updateCEHeader(price); _updateTpaPrice('ce', price) }
     if (id === 'NIFTY_27500PE') { updatePEHeader(price); _updateTpaPrice('pe', price) }
     if (id === 'SENSEX')        updateSensexChip(price)
-    if (_covHistory[id]) {
-      _covHistory[id].push(price)
-      if (_covHistory[id].length > 120) _covHistory[id].shift()
-      updateCovCard(id)
-    }
     if (id === 'NIFTY' && _oiProfileOn) _drawOiProfile()
   })
 
