@@ -10,6 +10,7 @@ import { $, $$, fmtPrice, fmtPriceShort, fmtChange, fmtPnl, fmtPct, fmtOI } from
 
 // ── App state ───────────────────────────────────────────────
 let oneClickOn        = false
+const _octSettings    = { autoRisk: false, slPct: 1.0, rrRatio: 2.0 }
 let _visibleCharts    = { ce: true, underlying: true, pe: true }
 let ceQty             = 250
 let peQty             = 500
@@ -593,10 +594,9 @@ function wireTopBar() {
   renderOptionsMetrics()
   startOptionsMetricTicker()
   store.on('pnl:updated', ({ totalUnrealized, totalRealized }) => {
-    const net = totalUnrealized + totalRealized
-    updateTopPnl(net)
+    updateTopPnl(totalUnrealized + totalRealized)
     setPnlCardValue('active-pnl-val', totalUnrealized)
-    setPnlCardValue('net-pnl-val', net)
+    setPnlCardValue('net-pnl-val', totalRealized)
   })
   store.on('funds:updated', ({ available }) => updateTopMargin(available))
 }
@@ -1063,7 +1063,24 @@ function handleOrder(side, chart, instrumentId) {
     const qty  = chart === 'ce' ? ceQty : peQty
     const inst = INSTRUMENTS[instrumentId] || { name: instrumentId, type: 'option' }
     const order = store.placeMarketOrder(side, instrumentId, qty, inst)
-    if (order) flashOrderFeedback(chart, side)
+    if (order) {
+      flashOrderFeedback(chart, side)
+      if (_octSettings.autoRisk) {
+        // positions:updated already fired synchronously — find the position
+        const pos = store.state.positions.find(p => p.instrumentId === instrumentId)
+        if (pos) {
+          const avg    = pos.avgPrice
+          const slPct  = _octSettings.slPct / 100
+          const tpPct  = slPct * _octSettings.rrRatio
+          const dir    = side === 'BUY' ? 1 : -1
+          activateRiskHandles(
+            pos.id, chart,
+            roundToTick(avg * (1 - dir * slPct)),
+            roundToTick(avg * (1 + dir * tpPct))
+          )
+        }
+      }
+    }
   } else {
     pendingOrderSide  = side
     pendingOrderChart = chart
@@ -1084,7 +1101,7 @@ const ctxMenu = $('#context-menu')
 let _ctxTarget = null
 
 function wireContextMenus() {
-  ['ce-menu-btn', 'underlying-menu-btn', 'pe-menu-btn', 'sub-menu-btn'].forEach(id => {
+  ['ce-menu-btn', 'underlying-menu-btn', 'pe-menu-btn'].forEach(id => {
     const btn = $(`#${id}`)
     if (!btn) return
     btn.addEventListener('click', e => {
@@ -1105,6 +1122,63 @@ function wireContextMenus() {
   })
 
   document.addEventListener('click', () => ctxMenu.classList.add('hidden'))
+  _wireOctPanel()
+}
+
+function _wireOctPanel() {
+  const panel     = $('#oct-panel')
+  const menuBtn   = $('#sub-menu-btn')
+  const closeBtn  = $('#oct-panel-close')
+  const riskTrack = $('#oct-risk-track')
+  const riskBody  = $('#oct-risk-body')
+  const slInput   = $('#oct-sl-pct')
+  const tpVal     = $('#oct-tp-pct-val')
+  if (!panel || !menuBtn) return
+
+  const updateTp = () => {
+    const tp = (_octSettings.slPct * _octSettings.rrRatio).toFixed(1)
+    if (tpVal) tpVal.textContent = tp
+  }
+
+  menuBtn.addEventListener('click', e => {
+    e.stopPropagation()
+    const rect = menuBtn.getBoundingClientRect()
+    panel.style.top  = (rect.bottom + 6) + 'px'
+    panel.style.right = (window.innerWidth - rect.right) + 'px'
+    panel.style.left  = 'auto'
+    panel.classList.toggle('hidden')
+  })
+
+  closeBtn?.addEventListener('click', () => panel.classList.add('hidden'))
+
+  riskTrack?.addEventListener('click', () => {
+    _octSettings.autoRisk = !_octSettings.autoRisk
+    riskTrack.classList.toggle('on', _octSettings.autoRisk)
+    riskBody?.classList.toggle('hidden', !_octSettings.autoRisk)
+  })
+
+  slInput?.addEventListener('input', () => {
+    _octSettings.slPct = Math.max(0.1, parseFloat(slInput.value) || 1)
+    updateTp()
+  })
+
+  $('#oct-rr-group')?.addEventListener('click', e => {
+    const btn = e.target.closest('.oct-rr-btn')
+    if (!btn) return
+    $$('.oct-rr-btn').forEach(b => b.classList.remove('active'))
+    btn.classList.add('active')
+    _octSettings.rrRatio = parseFloat(btn.dataset.rr)
+    updateTp()
+  })
+
+  document.addEventListener('click', e => {
+    if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== menuBtn)
+      panel.classList.add('hidden')
+  })
+
+  // Start with risk body hidden (autoRisk is false by default)
+  riskBody?.classList.add('hidden')
+  updateTp()
 }
 
 // ── Trading Defaults Modal ────────────────────────────────────
@@ -1918,6 +1992,9 @@ function placeChartLimitOrder(side, chartId, instrumentId, qty, limitPrice) {
       updateOrderLine(order.id, price)
       store.updateLimitOrderPrice(order.id, price, { silent: phase === 'move' })
     },
+    onCancel() {
+      store.cancelOrder(order.id)
+    },
   })
   return order
 }
@@ -2387,16 +2464,18 @@ function wireCrosshairButtons() {
     popup.dataset.chart = chartId
     _chartOverlayContainer.appendChild(popup)
 
-    let _hPrice = null
+    let _hPrice    = null
+    let _hScreenY  = null   // absolute viewport Y of the crosshair line
 
     // "+" tracks only Y (stays at right edge of plot, before price scale)
     const SCALE_W = 72  // approximate right price-scale width in our charts
     subscribeChartCrosshair(chartId, data => {
       if (!data || data.price === null) { btn.style.display = 'none'; return }
       const rect = chartEl.getBoundingClientRect()
-      _hPrice = data.price
+      _hPrice   = data.price
+      _hScreenY = rect.top + data.y   // store absolute Y for popup positioning
       btn.style.display = 'flex'
-      btn.style.top     = (rect.top + data.y - 10) + 'px'
+      btn.style.top     = (_hScreenY - 10) + 'px'
       btn.style.left    = tvPlusHotkey
         ? (rect.left + data.x - 10) + 'px'
         : (rect.right - SCALE_W - 22) + 'px'
@@ -2407,15 +2486,16 @@ function wireCrosshairButtons() {
       e.stopPropagation()
       if (_hPrice === null) return
       _chartOverlayContainer.querySelectorAll('.chart-order-popup').forEach(p => p.classList.add('hidden'))
-      const rect = chartEl.getBoundingClientRect()
-      const btnRect = btn.getBoundingClientRect()
-      const popupW = 220
-      const popupH = 186
-      // Center horizontally on the button; appear just below it
-      let left = Math.round(btnRect.left + btnRect.width / 2 - popupW / 2)
-      left = Math.max(rect.left + 4, Math.min(left, window.innerWidth - popupW - 8))
-      let top = btnRect.bottom + 6
-      if (top + popupH > window.innerHeight - 8) top = btnRect.top - popupH - 6
+      const rect   = chartEl.getBoundingClientRect()
+      const popupW = 270
+      const popupH = 148
+      // X: anchor to chart right edge minus price-scale — never undershoots left edge
+      let left = Math.round(rect.right - SCALE_W - popupW - 6)
+      left = Math.max(rect.left + 4, left)
+      // Y: use stored crosshair screen-Y so position matches where the user hovered
+      const screenY = _hScreenY ?? (rect.top + rect.height / 2)
+      let top = Math.round(screenY - 20)
+      if (top + popupH > window.innerHeight - 8) top = window.innerHeight - popupH - 8
       top = Math.max(rect.top + 4, top)
       popup.style.top   = top + 'px'
       popup.style.left  = left + 'px'
@@ -2432,32 +2512,51 @@ function wireCrosshairButtons() {
 }
 
 function buildTradingViewPlusMenuHTML(chartId, price) {
-  const instrId = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
-  const inst    = INSTRUMENTS[instrId]
-  const name    = inst?.name || instrId
-  const qty     = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
-  const p       = price.toFixed(2)
+  const instrId  = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+  const inst     = INSTRUMENTS[instrId]
+  const name     = inst?.name || instrId
+  const qty      = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
+  const p        = price.toFixed(2)
+  const stopP    = (price + 0.05).toFixed(2)
+
+  // Underlying chart is reference-only — no order rows, only drawing tools
+  if (chartId === 'underlying') {
+    return `
+    <div class="cop-row" data-action="hline">
+      <span class="cop-badge line">
+        <svg viewBox="0 0 10 10" fill="none"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1.5 1.5"/><circle cx="5" cy="5" r="1.5" fill="currentColor"/></svg>
+      </span>
+      <span>Draw Horizontal Line at ${p}</span>
+      <span class="cop-shortcut">Alt + H</span>
+    </div>`
+  }
+
   return `
-    <div class="cop-price-row">
-      <span>At price</span>
-      <strong>₹${p}</strong>
-    </div>
     <div class="cop-row" data-action="buy-limit">
-      <svg class="cop-icon" viewBox="0 0 16 16"><path d="M8 3v10M3 8l5-5 5 5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Buy ${qty} <strong>${name}</strong> limit</span>
+      <span class="cop-badge buy">
+        <svg viewBox="0 0 10 10" fill="none"><path d="M5 8V2M2 5l3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span>Buy ${qty} <strong>${name}</strong> @ ${p} limit</span>
     </div>
-    <div class="cop-row" data-action="sell-limit">
-      <svg class="cop-icon sell" viewBox="0 0 16 16"><path d="M8 3v10M3 8l5 5 5-5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Sell ${qty} <strong>${name}</strong> limit</span>
+    <div class="cop-row" data-action="sell-stoplimit">
+      <span class="cop-badge sell">
+        <svg viewBox="0 0 10 10" fill="none"><path d="M5 2v6M2 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span>Sell ${qty} <strong>${name}</strong> @ ${stopP} stop ${p} limit</span>
+    </div>
+    <div class="cop-row" data-action="new-order">
+      <span class="cop-badge neutral">
+        <svg viewBox="0 0 10 10" fill="none"><path d="M5 2v6M2 5h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </span>
+      <span>Add new order on <strong>${name}</strong></span>
     </div>
     <div class="cop-sep"></div>
-    <div class="cop-row" data-action="alert">
-      <svg class="cop-icon muted" viewBox="0 0 16 16"><path d="M8 2.5a4 4 0 0 0-4 4v2.1L2.8 11h10.4L12 8.6V6.5a4 4 0 0 0-4-4Z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M6.7 12.3a1.4 1.4 0 0 0 2.6 0" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-      <span>Add alert at ₹${p}</span>
-    </div>
     <div class="cop-row" data-action="hline">
-      <svg class="cop-icon muted" viewBox="0 0 16 16"><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
-      <span>Add horizontal line</span>
+      <span class="cop-badge line">
+        <svg viewBox="0 0 10 10" fill="none"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1.5 1.5"/><circle cx="5" cy="5" r="1.5" fill="currentColor"/></svg>
+      </span>
+      <span>Draw Horizontal Line at ${p}</span>
+      <span class="cop-shortcut">Alt + H</span>
     </div>`
 }
 
@@ -2492,10 +2591,12 @@ function wireChartPopup(popup, chartId, price) {
     const action  = row.dataset.action
     const instrId = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
     const qty     = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
-    if (action === 'buy-limit') {
+    if ((action === 'buy-limit') && chartId !== 'underlying') {
       placeChartLimitOrder('BUY', chartId, instrId, qty, price)
-    } else if (action === 'sell-limit') {
+    } else if ((action === 'sell-limit' || action === 'sell-stoplimit') && chartId !== 'underlying') {
       placeChartLimitOrder('SELL', chartId, instrId, qty, price)
+    } else if (action === 'new-order' && chartId !== 'underlying') {
+      showOrderOverlay('BUY', chartId, instrId)
     } else if (action === 'alert') {
       drawOrderLine(chartId, `alert-${Date.now()}`, price, '#F59E0B', 'Alert')
     } else if (action === 'hline') {
@@ -2518,7 +2619,7 @@ function removePriceHandle(id) {
   delete _priceHandles[id]
 }
 
-function createPriceHandle({ id, chartId, price, kind, side, label, color, onDrag, removeLine = true }) {
+function createPriceHandle({ id, chartId, price, kind, side, label, color, onDrag, onCancel, removeLine = true }) {
   removePriceHandle(id)
   const chartEl = $(`#${chartId}-chart`)
   if (!chartEl || !_chartOverlayContainer) return null
@@ -2529,10 +2630,21 @@ function createPriceHandle({ id, chartId, price, kind, side, label, color, onDra
   el.innerHTML = `
     <span class="cph-grip" aria-hidden="true"></span>
     <span class="cph-label">${label}</span>
-    <span class="cph-price">${fmtPrice(price)}</span>`
+    <span class="cph-price">${fmtPrice(price)}</span>
+    ${kind === 'limit' ? '<button class="cph-close" title="Cancel order">✕</button>' : ''}`
   _chartOverlayContainer.appendChild(el)
 
-  const handle = { id, chartId, chartEl, el, price, kind, onDrag, removeLine, dragging: false }
+  const closeBtn = el.querySelector('.cph-close')
+  if (closeBtn) {
+    closeBtn.addEventListener('pointerdown', e => e.stopPropagation())
+    closeBtn.addEventListener('click', e => {
+      e.stopPropagation()
+      if (typeof onCancel === 'function') onCancel()
+      else removePriceHandle(id)
+    })
+  }
+
+  const handle = { id, chartId, chartEl, el, price, kind, onDrag, onCancel, removeLine, dragging: false }
   _priceHandles[id] = handle
 
   const setPrice = (nextPrice, phase) => {
@@ -2695,29 +2807,39 @@ function riskPriceForPosition(pos, type) {
 }
 
 function createPositionRiskHandles(pos, chartId) {
-  const riskDefs = [
+  // Only CE/PE options have a TPA bar to manage risk — skip underlying positions
+  if (chartId === 'underlying') return
+  ;[
     { type: 'sl', label: 'SL', color: '#EF4444' },
     { type: 'tp', label: 'TP', color: '#00C853' },
-  ]
-
-  riskDefs.forEach(({ type, label, color }) => {
+  ].forEach(({ type, label, color }) => {
     const id = `risk-${pos.id}-${type}`
     const price = riskPriceForPosition(pos, type)
-    drawOrderLine(chartId, id, price, color, label)
-    createPriceHandle({
-      id,
-      chartId,
-      price,
-      kind: 'risk',
-      side: type,
-      label,
-      color,
+    // Create handle in dormant state — no visible line, won't auto-trigger
+    const handle = createPriceHandle({
+      id, chartId, price, kind: 'risk', side: type, label, color,
       onDrag(nextPrice) {
         updateOrderLine(id, nextPrice)
         const h = _priceHandles[id]
         if (h) { h.price = nextPrice; h.dormant = false }
       },
     })
+    if (handle) { handle.dormant = true; handle.el.style.display = 'none' }
+  })
+}
+
+function activateRiskHandles(posId, chartId, slPrice, tpPrice) {
+  ;[['sl', slPrice, '#EF4444', 'SL'], ['tp', tpPrice, '#00C853', 'TP']].forEach(([type, price, color, label]) => {
+    if (!price || isNaN(price)) return
+    const id = `risk-${posId}-${type}`
+    drawOrderLine(chartId, id, price, color, label)
+    const h = _priceHandles[id]
+    if (h) {
+      h.price   = price
+      h.dormant = false
+      h.el.style.display = ''
+      positionPriceHandle(h)
+    }
   })
 }
 

@@ -2852,6 +2852,134 @@ a      { text-decoration: none; color: inherit; }
 }
 
 /* ═══════════════════════════════════════════════════
+   ONE-CLICK SETTINGS PANEL
+═══════════════════════════════════════════════════ */
+.oct-panel {
+  position: fixed;
+  z-index: 120;
+  width: 248px;
+  background: #161820;
+  border: 1px solid #2a2d3e;
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.65);
+  padding: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.oct-panel.hidden { display: none; }
+
+.oct-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid #1e2232;
+  margin-bottom: 4px;
+}
+.oct-panel-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+.oct-panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+}
+.oct-panel-close:hover { color: var(--text-primary); }
+
+.oct-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 14px;
+  gap: 10px;
+}
+.oct-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.oct-risk-toggle { flex: 0 0 auto; }
+
+.oct-risk-body {
+  border-top: 1px solid #1e2232;
+  margin-top: 4px;
+  padding-top: 2px;
+}
+.oct-risk-body.hidden { display: none; }
+
+.oct-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #0f1218;
+  border: 1px solid #2a303c;
+  border-radius: 6px;
+  padding: 0 8px 0 6px;
+  height: 27px;
+}
+.oct-input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.oct-input-unit {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.oct-rr-group {
+  display: flex;
+  gap: 4px;
+}
+.oct-rr-btn {
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid #2a2d3e;
+  background: #0f1218;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
+}
+.oct-rr-btn:hover { border-color: #4a5070; color: var(--text-primary); }
+.oct-rr-btn.active {
+  border-color: #5065d4;
+  background: rgba(80,101,212,0.15);
+  color: #7b8ff0;
+}
+
+.oct-tp-display {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+.oct-auto-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 3px;
+}
+
+/* ═══════════════════════════════════════════════════
    CONTEXT MENU
 ═══════════════════════════════════════════════════ */
 .context-menu {
@@ -4102,67 +4230,54 @@ a      { text-decoration: none; color: inherit; }
 }
 .chart-order-popup.hidden { display: none; }
 
-.cop-price-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 12px;
-  background: #151823;
-  border-bottom: 1px solid #252839;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.cop-price-row strong {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-
 .cop-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  font-size: 12.5px;
+  gap: 9px;
+  padding: 8px 12px;
+  font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s;
+  transition: background 0.08s;
+  line-height: 1.3;
 }
-.cop-row:hover { background: #161926; color: var(--text-primary); }
-.cop-row[data-action="buy-limit"]  { color: #D1FAE5; }
-.cop-row[data-action="buy-limit"]:hover  { background: rgba(0,200,83,0.08); }
-.cop-row[data-action="sell-limit"] { color: #FEE2E2; }
-.cop-row[data-action="sell-limit"]:hover { background: rgba(239,68,68,0.08); }
-.cop-row strong { color: var(--white); font-weight: 700; }
+.cop-row:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); }
+.cop-row[data-action="buy-limit"]:hover  { background: rgba(0,200,83,0.07); }
+.cop-row[data-action="sell-stoplimit"]:hover { background: rgba(239,68,68,0.07); }
+.cop-row strong { color: var(--white); font-weight: 600; }
 
-.cop-icon {
-  width: 16px;
-  height: 16px;
+/* colored badge icon circle */
+.cop-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  color: var(--green);
 }
-.cop-icon.sell  { color: var(--red); }
-.cop-icon.muted { color: var(--text-muted); }
+.cop-badge svg { width: 11px; height: 11px; }
+.cop-badge.buy     { background: rgba(0,200,83,0.18);  color: #00c853; }
+.cop-badge.sell    { background: rgba(239,68,68,0.18); color: #ef4444; }
+.cop-badge.neutral { background: rgba(139,143,168,0.14); color: var(--text-secondary); }
+.cop-badge.line    { background: rgba(139,143,168,0.10); color: var(--text-muted); }
 
 .cop-shortcut {
   margin-left: auto;
   font-size: 10px;
   color: var(--text-muted);
-  background: #1A1D2A;
+  background: rgba(255,255,255,0.05);
   border: 1px solid #2A2D3E;
   border-radius: 4px;
-  padding: 1px 5px;
-  font-variant-numeric: tabular-nums;
+  padding: 2px 5px;
+  white-space: nowrap;
 }
 
 .cop-sep {
   height: 1px;
   background: #1E2130;
-  margin: 3px 0;
+  margin: 2px 0;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -4247,6 +4362,29 @@ a      { text-decoration: none; color: inherit; }
   color: currentColor;
   margin-left: auto;
 }
+
+.cph-close {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239,68,68,0.12);
+  border: 1px solid rgba(239,68,68,0.28);
+  border-radius: 3px;
+  color: #ef4444;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s;
+  pointer-events: auto;
+}
+.chart-price-handle:hover .cph-close { opacity: 1; }
+.cph-close:hover { background: rgba(239,68,68,0.28); }
 
 /* ═══════════════════════════════════════════════════
    ON-CHART POSITION P&L OVERLAY

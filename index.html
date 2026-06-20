@@ -132,10 +132,11 @@
           <img src="assets/logo.png" alt="logo" onerror="this.style.display='none';this.parentNode.innerHTML='<span style=&quot;font-size:20px;background:var(--gradient-logo);-webkit-background-clip:text;-webkit-text-fill-color:transparent&quot;>◈</span>'" />
         </a>
 
-        <!-- Option Chain — bookmark icon -->
+        <!-- Option Chain — chain link icon -->
         <a class="nav-icon active" href="#" id="nav-option-chain" title="Option Chain">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 3h14a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
           <span class="nav-label">Option Chain</span>
         </a>
@@ -511,11 +512,11 @@
         <div class="trade-center">
           <div class="pnl-switcher" id="pnl-switcher">
             <div class="pnl-card pnl-card--big" id="pnl-card-active" data-pnl="active">
-              <span class="pnl-card-label">Active P&amp;L</span>
+              <span class="pnl-card-label">Unrealised P&amp;L</span>
               <span class="pnl-card-value neg" id="active-pnl-val">−₹65.00</span>
             </div>
             <div class="pnl-card pnl-card--small" id="pnl-card-net" data-pnl="net">
-              <span class="pnl-card-label">Net P&amp;L</span>
+              <span class="pnl-card-label">Realised P&amp;L</span>
               <span class="pnl-card-value" id="net-pnl-val">₹0.00</span>
             </div>
           </div>
@@ -672,6 +673,46 @@
 
 </div><!-- /#app -->
 
+
+<!-- ════════════════════ ONE-CLICK SETTINGS PANEL ════════════════════ -->
+<div id="oct-panel" class="oct-panel hidden">
+  <div class="oct-panel-header">
+    <span class="oct-panel-title">One-click Settings</span>
+    <button class="oct-panel-close" id="oct-panel-close" title="Close">✕</button>
+  </div>
+
+  <div class="oct-row">
+    <span class="oct-label">Auto SL / TP</span>
+    <div class="toggle-track oct-risk-toggle" id="oct-risk-track">
+      <div class="toggle-thumb"></div>
+    </div>
+  </div>
+
+  <div class="oct-risk-body" id="oct-risk-body">
+    <div class="oct-row">
+      <span class="oct-label">Stop-Loss</span>
+      <div class="oct-input-wrap">
+        <input class="oct-input" id="oct-sl-pct" type="number" min="0.1" max="50" step="0.1" value="1.0">
+        <span class="oct-input-unit">%</span>
+      </div>
+    </div>
+
+    <div class="oct-row">
+      <span class="oct-label">Risk : Reward</span>
+      <div class="oct-rr-group" id="oct-rr-group">
+        <button class="oct-rr-btn" data-rr="1">1:1</button>
+        <button class="oct-rr-btn" data-rr="1.5">1:1.5</button>
+        <button class="oct-rr-btn active" data-rr="2">1:2</button>
+        <button class="oct-rr-btn" data-rr="3">1:3</button>
+      </div>
+    </div>
+
+    <div class="oct-row">
+      <span class="oct-label">Take-Profit</span>
+      <span class="oct-tp-display"><span id="oct-tp-pct-val">2.0</span>% <span class="oct-auto-tag">auto</span></span>
+    </div>
+  </div>
+</div>
 
 <!-- ════════════════════ CONTEXT MENU ════════════════════ -->
 <div id="context-menu" class="context-menu hidden">
