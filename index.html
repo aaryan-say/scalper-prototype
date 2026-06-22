@@ -456,6 +456,32 @@
 
       </div><!-- /#chart-area -->
 
+      <!-- ── MARKET DEPTH TRAY ── -->
+      <div id="depth-tray">
+        <!-- Collapsed summary bar -->
+        <div id="depth-bar">
+          <button class="depth-toggle-btn" id="depth-toggle-btn" title="Market depth">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+              <rect x="1" y="2" width="14" height="2.5" rx="1"/>
+              <rect x="1" y="6.5" width="10" height="2.5" rx="1"/>
+              <rect x="1" y="11" width="12" height="2.5" rx="1"/>
+            </svg>
+            <span>Depth</span>
+          </button>
+          <div class="depth-bar-items" id="depth-bar-items"><!-- JS --></div>
+          <span class="depth-stale hidden" id="depth-stale">Stale</span>
+          <button class="depth-expand-btn" id="depth-expand-btn" title="Expand depth">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <polyline points="2,6 5,3 8,6"/>
+            </svg>
+          </button>
+        </div>
+        <!-- Expanded ladder -->
+        <div id="depth-body" class="hidden">
+          <div class="depth-panels" id="depth-panels"><!-- JS --></div>
+        </div>
+      </div>
+
       <section id="trade-module" aria-label="Order controls">
 
         <!-- ── CE Trade Panel ── -->

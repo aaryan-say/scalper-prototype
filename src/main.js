@@ -120,6 +120,29 @@ let _chartOverlayContainer = null
 const _posOverlays = {}   // posId → { chartId, el, entryPrice, chartEl }
 const _priceHandles = {}  // id → draggable limit / SL / TP chart handles
 
+// ── Market Depth Tray state ──────────────────────────────────
+const _depthBooks = {
+  ce:         { bids: [], asks: [], lastUpdate: 0, mid: 0 },
+  pe:         { bids: [], asks: [], lastUpdate: 0, mid: 0 },
+  underlying: { bids: [], asks: [], lastUpdate: 0, mid: 0 },
+}
+const _prevBestPrices = {
+  ce:         { bid: 0, ask: 0 },
+  pe:         { bid: 0, ask: 0 },
+  underlying: { bid: 0, ask: 0 },
+}
+let _trayOpen  = false
+let _trayStaleTimer = null
+
+// Depth panels mirror whichever option charts are visible
+function _depthKeys() {
+  const keys = []
+  if (_visibleCharts.ce) keys.push('ce')
+  if (_visibleCharts.pe) keys.push('pe')
+  if (keys.length === 0 && _visibleCharts.underlying) keys.push('underlying')
+  return keys
+}
+
 // ── Toast notifications ──────────────────────────────────────
 function showToast(message, type = 'info') {
   const el = document.createElement('div')
@@ -166,9 +189,15 @@ document.addEventListener('DOMContentLoaded', () => {
   wireChartVisibility()
   wireDrawingToolbar()
   wireChartToast()
+  wireDepthTray()
   startPositionOverlayLoop()
   startPriceHandleLoop()
   priceEngine.start()
+  // Seed depth books from initial prices
+  _initDepthBook('ce',         currentPrices.NIFTY_27500CE || 300)
+  _initDepthBook('pe',         currentPrices.NIFTY_27500PE || 150)
+  _initDepthBook('underlying', currentPrices.NIFTY         || 24000)
+  _renderDepthTrayBar()
 })
 
 // ── Seed price engine ────────────────────────────────────────
@@ -193,6 +222,7 @@ function seedPriceEngine() {
     store.updatePrice(id, price, bid, ask)
     _checkRiskLevels(id, price)
     updateDepthOnTick(id, price, bid, ask)
+    _tickDepthTray(id, price)
     if (id === 'NIFTY')         { updateNiftyChip(price); updateUnderlyingHeader(price) }
     if (id === 'NIFTY_27500CE') { updateCEHeader(price); _updateTpaPrice('ce', price) }
     if (id === 'NIFTY_27500PE') { updatePEHeader(price); _updateTpaPrice('pe', price) }
@@ -1008,6 +1038,9 @@ function _applyChartVisibility() {
     resizeCharts()
     restoreVisibleRanges(savedRanges)
   }))
+
+  _renderDepthTrayBar()
+  if (_trayOpen) _renderDepthTrayBody()
 }
 
 // ── PnL Switcher (Active ↔ Net swap) ─────────────────────────
@@ -1730,11 +1763,11 @@ function wireOrderOverlay() {
   })
 }
 
-function showOrderOverlay(side, chart, instrumentId) {
+function showOrderOverlay(side, chart, instrumentId, prefillPrice) {
   const overlay = $('#order-overlay')
   if (!overlay) return
   const inst = INSTRUMENTS[instrumentId] || { name: instrumentId, lotSize: 1, type: 'option' }
-  const price = priceEngine.getPrice(instrumentId) || 0
+  const price = prefillPrice ?? priceEngine.getPrice(instrumentId) ?? 0
   const base = _basePrice[instrumentId] || price || 1
   const change = +(price - base).toFixed(2)
   const pct = base ? +(((price - base) / base) * 100).toFixed(2) : 0
@@ -2341,6 +2374,260 @@ function updateDepthOnTick(id, price, bid, ask) {
   if (_depthTick % 3 !== 0) return
   if (id === 'NIFTY_27500CE') _renderDepth('ce', price, bid, ask)
   if (id === 'NIFTY_27500PE') _renderDepth('pe', price, bid, ask)
+}
+
+// ── Market Depth Tray ────────────────────────────────────────
+function _depthTickSize(price) {
+  if (price < 25)  return 0.05
+  if (price < 100) return 0.25
+  if (price < 500) return 0.50
+  return 1.00
+}
+
+function _initDepthBook(key, mid) {
+  const tick = _depthTickSize(mid)
+  const mk   = (side, i) => ({
+    price: +(side === 'bid' ? mid - tick * (i + 1) : mid + tick * (i + 1)).toFixed(2),
+    qty: Math.round(300 + Math.random() * 1700),
+  })
+  _depthBooks[key] = {
+    bids: Array.from({ length: 5 }, (_, i) => mk('bid', i)),
+    asks: Array.from({ length: 5 }, (_, i) => mk('ask', i)),
+    lastUpdate: Date.now(), mid,
+  }
+}
+
+let _trayTickCount = 0
+function _tickDepthTray(instrId, price) {
+  const key = instrId === 'NIFTY_27500CE' ? 'ce'
+            : instrId === 'NIFTY_27500PE' ? 'pe'
+            : instrId === 'NIFTY'         ? 'underlying'
+            : null
+  if (!key) return
+
+  const book = _depthBooks[key]
+  if (!book.bids.length) { _initDepthBook(key, price); }
+
+  _trayTickCount++
+  const tick = _depthTickSize(price)
+  book.mid = price
+  book.bids = book.bids.map((b, i) => ({
+    price: +(price - tick * (i + 1)).toFixed(2),
+    qty: Math.max(50, b.qty + Math.round((Math.random() - 0.47) * 200)),
+  }))
+  book.asks = book.asks.map((a, i) => ({
+    price: +(price + tick * (i + 1)).toFixed(2),
+    qty: Math.max(50, a.qty + Math.round((Math.random() - 0.47) * 200)),
+  }))
+  book.lastUpdate = Date.now()
+
+  // Flash TOB cells when best price changes
+  const prev = _prevBestPrices[key]
+  const bidChanged = prev.bid !== 0 && book.bids[0].price !== prev.bid
+  const askChanged = prev.ask !== 0 && book.asks[0].price !== prev.ask
+  prev.bid = book.bids[0].price
+  prev.ask = book.asks[0].price
+
+  _renderDepthTrayBar()
+  if (_trayOpen) {
+    _renderDepthTrayBody()
+    if (bidChanged) _flashTob(key, 'bid')
+    if (askChanged) _flashTob(key, 'ask')
+  }
+  _resetTrayStaleTimer()
+}
+
+function _resetTrayStaleTimer() {
+  clearTimeout(_trayStaleTimer)
+  const stale = $('#depth-stale')
+  if (stale) stale.classList.add('hidden')
+  _trayStaleTimer = setTimeout(() => {
+    $('#depth-stale')?.classList.remove('hidden')
+  }, 4000)
+}
+
+function _flashTob(key, side) {
+  const panel = $(`#depth-panels .depth-panel[data-side="${key}"]`)
+  if (!panel) return
+  const el = panel.querySelector(side === 'bid' ? '.depth-tob-bid' : '.depth-tob-ask')
+  if (!el) return
+  el.classList.remove('tob-flash')
+  void el.offsetWidth // force reflow to restart animation
+  el.classList.add('tob-flash')
+  setTimeout(() => el.classList.remove('tob-flash'), 600)
+}
+
+function _fmtQty(q) { return q.toLocaleString('en-IN') }
+
+function _renderDepthTrayBar() {
+  const el = $('#depth-bar-items')
+  if (!el) return
+  const keys = _depthKeys()
+
+  el.innerHTML = keys.map(key => {
+    const book = _depthBooks[key]
+    if (!book.bids.length) return ''
+    const bid    = book.bids[0]
+    const ask    = book.asks[0]
+    const spread = (ask.price - bid.price).toFixed(2)
+    const tick   = _depthTickSize(book.mid)
+    const isWide = (ask.price - bid.price) > tick * 5
+    const label  = key === 'ce' ? 'CE' : key === 'pe' ? 'PE' : 'UL'
+    return `<div class="depth-bar-pair">
+      <span class="depth-bar-tag">${label}</span>
+      <span class="depth-bar-bid">${bid.price.toFixed(2)}</span>
+      <span class="depth-bar-sep" style="opacity:.35">×</span>
+      <span class="depth-bar-bid" style="opacity:.55;font-size:10px">${_fmtQty(bid.qty)}</span>
+      <span class="depth-bar-sep">/</span>
+      <span class="depth-bar-ask">${ask.price.toFixed(2)}</span>
+      <span class="depth-bar-sep" style="opacity:.35">×</span>
+      <span class="depth-bar-ask" style="opacity:.55;font-size:10px">${_fmtQty(ask.qty)}</span>
+      <span class="depth-bar-spread ${isWide ? 'wide' : ''}">₹${spread}</span>
+    </div>`
+  }).join('')
+}
+
+function _buildDepthPanel(key) {
+  const book = _depthBooks[key]
+  if (!book.bids.length) return ''
+
+  const { bids, asks } = book
+  const tick      = _depthTickSize(book.mid)
+  const rawSpread = asks[0].price - bids[0].price
+  const spread    = rawSpread.toFixed(2)
+  const isWide    = rawSpread > tick * 5
+
+  const totalBid = bids.reduce((s, b) => s + b.qty, 0)
+  const totalAsk = asks.reduce((s, a) => s + a.qty, 0)
+  const bidPct   = Math.round(totalBid / (totalBid + totalAsk) * 100)
+  const askPct   = 100 - bidPct
+  const imbLabel = bidPct > 55 ? `Bid Heavy ${bidPct}%`
+                 : askPct > 55 ? `Ask Heavy ${askPct}%`
+                 : 'Balanced'
+  const imbCls   = bidPct > 55 ? 'bid' : askPct > 55 ? 'ask' : 'bal'
+
+  // Instrument name with strike if available
+  const instrId  = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : null
+  const strike   = instrId ? INSTRUMENTS[instrId]?.strike : null
+  const optType  = key === 'ce' ? 'CE' : key === 'pe' ? 'PE' : ''
+  const name     = strike ? `NIFTY ${strike} ${optType}` : key === 'underlying' ? 'NIFTY 50' : `NIFTY ${optType}`
+
+  // Levels 2-5 for the ladder (best level shown in TOB band)
+  const ladderBids = bids.slice(1)
+  const ladderAsks = asks.slice(1)
+  const maxQty  = Math.max(...ladderBids.map(b => b.qty), ...ladderAsks.map(a => a.qty), 1)
+  const barPct  = q => ((q / maxQty) * 100).toFixed(1)
+
+  const rows = ladderBids.map((b, i) => {
+    const a = ladderAsks[i]
+    return `<div class="depth-row" data-key="${key}">
+      <div class="depth-bid-qty" style="--bar:${barPct(b.qty)}%">${_fmtQty(b.qty)}</div>
+      <div class="depth-bid-price" data-side="bid" data-price="${b.price}" data-key="${key}">${b.price.toFixed(2)}</div>
+      <div class="depth-ask-price" data-side="ask" data-price="${a.price}" data-key="${key}">${a.price.toFixed(2)}</div>
+      <div class="depth-ask-qty" style="--bar:${barPct(a.qty)}%">${_fmtQty(a.qty)}</div>
+    </div>`
+  }).join('')
+
+  const chartId = key === 'ce' ? 'ce' : key === 'pe' ? 'pe' : 'underlying'
+
+  return `<div class="depth-panel" data-key="${key}" data-side="${key}">
+
+    <!-- ① Header -->
+    <div class="depth-panel-hdr">
+      <span class="depth-panel-name">${name}</span>
+      <span class="depth-spread-chip${isWide ? ' wide' : ''}">${isWide ? '⚠ Wide' : 'Spread'} ₹${spread}</span>
+      <span class="depth-imb-chip ${imbCls}">${imbLabel}</span>
+    </div>
+    <div class="depth-imb-bar"><div class="depth-imb-bar-fill" style="width:${bidPct}%"></div></div>
+
+    <!-- ② Top-of-book band (best bid / best ask) -->
+    <div class="depth-tob-band">
+      <div class="depth-tob-bid" data-side="bid" data-price="${bids[0].price}" data-key="${key}">
+        <span class="depth-tob-label">Bid</span>
+        <span class="depth-tob-price">${bids[0].price.toFixed(2)}</span>
+        <span class="depth-tob-qty">× ${_fmtQty(bids[0].qty)}</span>
+      </div>
+      <div class="depth-tob-divider"></div>
+      <div class="depth-tob-ask" data-side="ask" data-price="${asks[0].price}" data-key="${key}">
+        <span class="depth-tob-label">Ask</span>
+        <span class="depth-tob-price">${asks[0].price.toFixed(2)}</span>
+        <span class="depth-tob-qty">× ${_fmtQty(asks[0].qty)}</span>
+      </div>
+    </div>
+
+    <!-- ③ Ladder (levels 2-5) -->
+    <div class="depth-col-hdr">
+      <span>BID QTY</span><span>BID</span><span>ASK</span><span>ASK QTY</span>
+    </div>
+    <div class="depth-rows">${rows}</div>
+
+    <!-- ④ Quick actions -->
+    <div class="depth-actions">
+      <button class="depth-act-btn join" data-act="join" data-key="${key}" data-chart="${chartId}">Join Bid</button>
+      <button class="depth-act-btn lift" data-act="lift" data-key="${key}" data-chart="${chartId}">Buy Ask</button>
+      <button class="depth-act-btn"      data-act="mid"  data-key="${key}" data-chart="${chartId}">Mid</button>
+    </div>
+    <div class="depth-totals">
+      <span>Bid ${_fmtQty(totalBid)}</span>
+      <span>Ask ${_fmtQty(totalAsk)}</span>
+    </div>
+
+  </div>`
+}
+
+function _renderDepthTrayBody() {
+  const panels = $('#depth-panels')
+  if (!panels) return
+  const keys = _depthKeys()
+  panels.className = `depth-panels${keys.length === 1 ? ' single' : ''}`
+  panels.innerHTML = keys.map(_buildDepthPanel).join('')
+}
+
+function wireDepthTray() {
+  const tray      = $('#depth-tray')
+  const toggleBtn = $('#depth-toggle-btn')
+  const expandBtn = $('#depth-expand-btn')
+  const body      = $('#depth-body')
+  if (!tray || !toggleBtn) return
+
+  const toggle = () => {
+    _trayOpen = !_trayOpen
+    tray.classList.toggle('open', _trayOpen)
+    body.classList.toggle('hidden', !_trayOpen)
+    expandBtn.title = _trayOpen ? 'Collapse depth' : 'Expand depth'
+    if (_trayOpen) _renderDepthTrayBody()
+  }
+
+  toggleBtn.addEventListener('click', toggle)
+  expandBtn.addEventListener('click', toggle)
+
+  // Delegate: click on bid/ask price → open order overlay with that price pre-filled
+  $('#depth-panels')?.addEventListener('click', e => {
+    const priceEl = e.target.closest('[data-price]')
+    if (priceEl) {
+      const price   = parseFloat(priceEl.dataset.price)
+      const key     = priceEl.dataset.key
+      const side    = priceEl.dataset.side === 'bid' ? 'BUY' : 'BUY'
+      const chartId = key === 'ce' ? 'ce' : key === 'pe' ? 'pe' : 'underlying'
+      const instrId = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+      showOrderOverlay(side, chartId, instrId, price)
+      return
+    }
+
+    const actBtn = e.target.closest('[data-act]')
+    if (actBtn) {
+      const key     = actBtn.dataset.key
+      const chartId = actBtn.dataset.chart
+      const instrId = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+      const book    = _depthBooks[key]
+      if (!book.bids.length) return
+      const act = actBtn.dataset.act
+      const price = act === 'join' ? book.bids[0].price
+                  : act === 'lift' ? book.asks[0].price
+                  : +((book.bids[0].price + book.asks[0].price) / 2).toFixed(2)
+      showOrderOverlay('BUY', chartId, instrId, price)
+    }
+  })
 }
 
 function renderPositions() {
