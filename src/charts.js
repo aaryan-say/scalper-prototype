@@ -282,6 +282,18 @@ export function destroy() {
   ceVolSeries = underlyingVolSeries = peVolSeries = null
 }
 
+// ── Price-scale / time-scale change subscription ─────────────
+// Fires whenever the user pans, zooms, or the visible range changes.
+// Used to re-anchor overlays (DOM panel, bid/ask tags) after chart scroll.
+export function subscribeChartRangeChange(chartId, callback) {
+  const [chart] = _chartMap()[chartId] || []
+  if (!chart) return () => {}
+  const unsub1 = chart.timeScale().subscribeVisibleTimeRangeChange(callback)
+  // Also catch vertical (price-scale) drag — LightweightCharts fires a crosshair
+  // move on every mousemove during axis drag so we can reuse that signal.
+  return () => { try { chart.timeScale().unsubscribeVisibleTimeRangeChange(callback) } catch {} }
+}
+
 // ── Crosshair subscription ────────────────────────────────────
 const _chartMap = () => ({
   ce:         [ceChart,         ceSeries],
@@ -307,6 +319,40 @@ export function subscribeChartCrosshair(chartId, callback) {
   }
   chart.subscribeCrosshairMove(handler)
   _crosshairUnsubs[chartId] = () => chart.unsubscribeCrosshairMove(handler)
+}
+
+// ── DOM optimal-zoom snap ─────────────────────────────────────
+// Snaps price scale to centerPrice ± halfRange.
+// Sequence: enable autoScale → set fixed provider → render → lock scale → restore provider.
+// After snap the scale stays locked; user can drag price axis to zoom freely,
+// or double-click price axis to reset to full autoscale.
+export function snapPriceRange(chartId, centerPrice, halfRange) {
+  const [chart, series] = _chartMap()[chartId] || []
+  if (!chart || !series) return
+
+  // 1. Ensure autoScale is on so autoscaleInfoProvider is honoured
+  chart.applyOptions({ rightPriceScale: { autoScale: true } })
+
+  // 2. Override autoscaleInfoProvider to force the tight range
+  series.applyOptions({
+    autoscaleInfoProvider: () => ({
+      priceRange: { minValue: centerPrice - halfRange, maxValue: centerPrice + halfRange },
+    }),
+  })
+
+  // 3. After the chart renders at the snapped range, disable autoScale to lock it,
+  //    then restore the default (clamp-to-zero) autoscaleInfoProvider
+  setTimeout(() => {
+    chart.applyOptions({ rightPriceScale: { autoScale: false } })
+    series.applyOptions({
+      autoscaleInfoProvider: orig => {
+        const res = orig()
+        if (!res) return res
+        res.priceRange.minValue = Math.max(0, res.priceRange.minValue)
+        return res
+      },
+    })
+  }, 150)
 }
 
 // ── Price → screen Y (pixels within chart-body element) ──────

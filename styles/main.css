@@ -1008,6 +1008,279 @@ a      { text-decoration: none; color: inherit; }
 .oi-check-path { opacity: 0; transition: opacity 0.12s; }
 .oi-profile-btn.active .oi-check-path { opacity: 1; }
 
+/* Bid / Ask overlay toggle */
+.ba-toggle-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 11px; font-weight: 600;
+  color: var(--text-secondary);
+  background: none; cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.ba-toggle-btn:hover { color: var(--text-primary); background: var(--bg-card-raised); }
+.ba-toggle-btn.active {
+  color: #8b9ff8;
+  background: rgba(80, 101, 212, 0.12);
+  border-color: rgba(80, 101, 212, 0.35);
+}
+.ba-toggle-label { letter-spacing: 0.01em; }
+
+/* Gear icon button beside Bid / Ask */
+.ba-settings-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin-left: -3px;
+  border-radius: var(--r-sm); border: none;
+  background: none; color: var(--text-muted);
+  cursor: pointer; transition: color 0.12s, background 0.12s;
+  flex-shrink: 0;
+}
+.ba-settings-btn:hover { color: var(--text-secondary); background: var(--bg-card-raised); }
+
+/* Bid / Ask display settings popover */
+.ba-settings-panel {
+  position: fixed; z-index: 120;
+  width: 220px;
+  background: #161820;
+  border: 1px solid #2a2d3e;
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.65);
+  padding: 0 0 8px;
+  font-size: 12px; color: var(--text-primary);
+}
+.ba-settings-panel.hidden { display: none; }
+.ba-settings-header {
+  padding: 11px 14px 9px;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--text-secondary);
+  border-bottom: 1px solid #252838;
+  margin-bottom: 4px;
+}
+.ba-setting-option {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 7px 14px; cursor: pointer;
+  border-radius: 6px; margin: 0 4px;
+  transition: background 0.1s;
+}
+.ba-setting-option:hover { background: rgba(255,255,255,0.04); }
+.ba-setting-option input[type="radio"] {
+  margin-top: 2px; flex-shrink: 0;
+  accent-color: #8b9ff8;
+}
+.ba-setting-content { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.ba-setting-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.ba-setting-desc  { font-size: 10.5px; color: var(--text-muted); line-height: 1.4; }
+
+/* Row variant (toggle row, no radio) */
+.ba-setting-row { cursor: default; align-items: center; }
+.ba-setting-row:hover { background: rgba(255,255,255,0.04); }
+.ba-settings-divider {
+  height: 1px; background: #252838; margin: 4px 0;
+}
+/* Pinned header shows a subtle tint */
+.ba-dom-rail-hdr.pinned { background: rgba(139,159,248,0.07) !important; }
+/* Pin toggle track reuses .toggle-track; just needs a size match */
+.ba-dom-pin-track { flex-shrink: 0; }
+
+/* Bid / Ask price-axis tags */
+/* Combined bid/ask pair — single element positioned at mid price on the axis */
+.ba-pair {
+  position: absolute;
+  flex-direction: column;
+  pointer-events: auto; cursor: pointer;
+  user-select: none;
+  border-radius: 3px;
+  overflow: hidden;
+  white-space: nowrap;
+  z-index: 5;
+}
+.ba-pair-row {
+  display: flex; align-items: center; gap: 3px;
+  height: 20px; padding: 0 6px 0 5px;
+  font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.ba-pair-ask {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  border-bottom: none;
+  color: #EF4444;
+}
+.ba-pair-bid {
+  background: rgba(0, 200, 83, 0.15);
+  border: 1px solid rgba(0, 200, 83, 0.32);
+  color: #00C853;
+}
+.ba-pair:hover .ba-pair-row { filter: brightness(1.15); }
+.ba-pair-label {
+  font-size: 9px; font-weight: 800;
+  opacity: 0.65; flex-shrink: 0;
+}
+.ba-pair-qty {
+  font-size: 10px; font-weight: 600; opacity: 0.75;
+  margin-left: 1px;
+}
+
+
+/* DOM panel — qty-only overlay on price scale, no price column */
+.ba-dom-panel {
+  position: absolute;
+  width: 72px;        /* matches _BA_DOM_W — just bid|ask qty columns */
+  background: rgba(8, 11, 18, 0.82);
+  border: none;
+  border-right: 1px solid #1e2536;  /* right edge = left edge of price scale */
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;   /* no scroll — all rows fit within chart height */
+  /* panel background passes all events through to the chart canvas below;
+     only interactive children re-enable pointer-events via CSS */
+  pointer-events: none;
+  z-index: 6;
+}
+.ba-dom-panel.hidden { display: none; }
+
+/* Sticky rail header — very compact */
+.ba-dom-rail-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 20px;
+  padding: 0 5px;
+  position: sticky; top: 0;
+  background: rgba(8, 11, 18, 0.99);
+  border-bottom: 1px solid #191e2c;
+  z-index: 2;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.ba-dom-rail-name {
+  font-size: 8px; font-weight: 700; text-transform: uppercase;
+  color: var(--text-muted); letter-spacing: 0.04em;
+}
+.ba-dom-pin-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border: none;
+  border-radius: 3px; background: none;
+  color: var(--text-muted); cursor: pointer;
+  transition: color 0.12s; flex-shrink: 0; padding: 0;
+  pointer-events: auto;
+}
+.ba-dom-pin-btn:hover { color: var(--text-secondary); }
+.ba-dom-pin-btn.pinned { color: #8b9ff8; }
+.ba-dom-spr-lbl {
+  font-size: 7.5px; font-weight: 700; color: var(--text-muted);
+}
+.ba-dom-spr-lbl.wide { color: var(--amber); }
+
+/* Column labels: B | A */
+.ba-dom-col-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1px 5px;
+  position: sticky; top: 20px;
+  background: rgba(8, 11, 18, 0.99);
+  border-bottom: 1px solid #1a1f2e;
+  z-index: 1;
+}
+.ba-dom-col-bid-lbl {
+  font-size: 7.5px; font-weight: 800; text-transform: uppercase;
+  color: rgba(34,197,94,0.50); letter-spacing: 0.03em;
+}
+.ba-dom-col-ask-lbl {
+  font-size: 7.5px; font-weight: 800; text-transform: uppercase;
+  color: rgba(239,68,68,0.50); letter-spacing: 0.03em;
+}
+.ba-dom-col-step {
+  font-size: 7px; font-weight: 600;
+  color: var(--amber); opacity: 0.75;
+  letter-spacing: 0.01em;
+}
+
+/* Qty-only parallel row — height set inline (dynamic per zoom tier) */
+.ba-dom-row2 {
+  display: flex;
+  min-height: 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.015);
+  flex-shrink: 0;
+}
+.ba-dom-row2--tob .ba-dom-bid-cell { background: rgba(34,197,94,0.06); }
+.ba-dom-row2--tob .ba-dom-ask-cell { background: rgba(239,68,68,0.06); }
+
+.ba-dom-bid-cell,
+.ba-dom-ask-cell {
+  display: flex; align-items: center;
+  flex: 1; padding: 0 4px; cursor: pointer;
+  pointer-events: auto;  /* re-enable on interactive cells */
+}
+.ba-dom-bid-cell { justify-content: flex-end; border-right: 1px solid #1a1f2e; }
+.ba-dom-ask-cell { justify-content: flex-start; }
+.ba-dom-bid-cell:hover { background: rgba(34,197,94,0.09) !important; }
+.ba-dom-ask-cell:hover { background: rgba(239,68,68,0.09) !important; }
+
+.ba-dom2-qty {
+  font-size: 8.5px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ba-dom2-bid-qty { color: rgba(34,197,94,0.80); }
+.ba-dom2-ask-qty { color: rgba(239,68,68,0.80); }
+
+/* ── Vertical DOM rows: asks above spread, bids below ── */
+.ba-dom-vrow {
+  position: relative;
+  height: 16px;
+  display: flex; align-items: center;
+  padding: 0 5px;
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  border-bottom: 1px solid rgba(255,255,255,0.015);
+  flex-shrink: 0;
+}
+.ba-dom-vrow--empty { cursor: default; pointer-events: none; }
+.ba-dom-vrow--ask:hover { background: rgba(239,68,68,0.09) !important; }
+.ba-dom-vrow--bid:hover { background: rgba(34,197,94,0.09) !important; }
+
+.ba-dom-vqty {
+  position: relative; z-index: 1;
+  font-size: 8.5px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+.ba-dom-vrow--ask .ba-dom-vqty { color: rgba(239,68,68,0.85); }
+.ba-dom-vrow--bid .ba-dom-vqty { color: rgba(34,197,94,0.85); }
+
+.ba-dom-vbar {
+  position: absolute; top: 0; right: 0; height: 100%;
+  pointer-events: none;
+}
+.ba-dom-vbar--ask { background: rgba(239,68,68,0.10); }
+.ba-dom-vbar--bid { background: rgba(34,197,94,0.10); }
+
+.ba-dom-spr-row {
+  height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.025);
+  border-top: 1px solid rgba(255,255,255,0.055);
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+  font-size: 7.5px; font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* Spread chip below bid tag */
+.ba-spread {
+  position: absolute;
+  font-size: 9.5px; font-weight: 700;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+  pointer-events: none;
+  white-space: nowrap;
+  user-select: none;
+  z-index: 2;
+}
+
 /* Profile Setting button */
 .profile-setting-btn {
   display: flex; align-items: center; gap: 5px;

@@ -23,33 +23,37 @@ function randn(rng) {
 
 // ── Instrument definitions ──────────────────────────────────
 export const INSTRUMENTS = {
-  TATAPOWER:     { name: 'TATAPOWER', type: 'equity', lotSize: 1,  basePrice: 348.50 },
-  NIFTY:         { name: 'NIFTY 50',  type: 'index',  lotSize: 50, basePrice: 24186  },
-  SENSEX:        { name: 'SENSEX',    type: 'index',  lotSize: 10, basePrice: 79501  },
-  OPT_360PE:     { name: '30 Mar 360 PE',    type: 'option', optType: 'PE', strike: 360,   lotSize: 1,  basePrice: 35.20 },
-  NIFTY_27500PE: { name: 'NIFTY 27500 PE',   type: 'option', optType: 'PE', strike: 27500, lotSize: 50, basePrice: 320   },
-  NIFTY_27500CE: { name: 'NIFTY 27500 CE',   type: 'option', optType: 'CE', strike: 27500, lotSize: 50, basePrice: 350   },
+  TATAPOWER: { name: 'TATAPOWER', type: 'equity', lotSize: 1,  basePrice: 348.50 },
+  NIFTY:     { name: 'NIFTY 50',  type: 'index',  lotSize: 25, basePrice: 24200  },
+  SENSEX:    { name: 'SENSEX',    type: 'index',  lotSize: 10, basePrice: 79501  },
+  OPT_360PE: { name: '30 Mar 360 PE', type: 'option', optType: 'PE', strike: 360, lotSize: 1, basePrice: 35.20 },
+  // NIFTY_CE and NIFTY_PE are added dynamically after ATM_STRIKE is computed (see below)
 }
 
 // ── Historical OHLCV generator ──────────────────────────────
 // Returns `count` × 5-minute candles ending at "now"
-export function generateHistory(basePrice, vol, count, seed = 42, drift = 0.00003) {
+// kappa: mean-reversion strength — 0 = pure random walk, 0.05 = gentle pull back to basePrice
+export function generateHistory(basePrice, vol, count, seed = 42, drift = 0, kappa = 0) {
   const rng  = mkRng(seed)
   const bars = []
   let price  = basePrice
 
   const nowSec    = Math.floor(Date.now() / 1000)
-  const barSec    = 5 * 60  // 5 minutes
+  const barSec    = 5 * 60
   const startTime = nowSec - count * barSec
 
   for (let i = 0; i < count; i++) {
-    const open  = price
-    const move  = randn(rng) * vol + drift
-    const close = Math.max(open * (1 + move), 0.5)
-    const range = Math.abs(randn(rng)) * vol * 0.6
-    const high  = Math.max(open, close) * (1 + range)
-    const low   = Math.min(open, close) * (1 - range)
-    const vol_  = Math.floor(500 + rng() * 9500)
+    const open     = price
+    // Mean-reversion term pulls price back toward basePrice each bar
+    const reversion = kappa * (basePrice - price) / basePrice
+    const move     = randn(rng) * vol + drift + reversion
+    const close    = Math.max(open * (1 + move), 0.5)
+    // Wicks: mix of small (consolidation) and occasional larger (momentum) bars
+    const wickVol  = Math.abs(randn(rng)) * vol
+    const range    = wickVol * (0.4 + rng() * 0.8)   // 40–120% of move vol
+    const high     = Math.max(open, close) * (1 + range)
+    const low      = Math.min(open, close) * (1 - range)
+    const vol_     = Math.floor(500 + rng() * 9500)
 
     bars.push({
       time:   startTime + i * barSec,
@@ -114,40 +118,35 @@ export function calcGreeks(spot, strike, tte, iv, type = 'CE') {
 }
 
 // Generates option history using proper delta-based (Black-Scholes elasticity) movement
-function generateOptionHistory(spotHistory, baseOptionPrice, strike, type, seed, tte0 = 0.12, iv = 0.22, idioVol = 0.006) {
+// Direct BS-pricing history: correct theoretical price at each bar + realistic trading noise.
+// noise ±4% per bar simulates real order-flow variability on top of the fair value.
+function generateOptionHistory(spotHistory, _ignored, strike, type, seed, tte0 = 0.038, iv0 = 0.14) {
   const rng   = mkRng(seed)
-  const bars  = []
-  let price   = baseOptionPrice
   const nBars = spotHistory.length
+  const bars  = []
+  let prevClose = null
 
   for (let i = 0; i < nBars; i++) {
-    const spotBar  = spotHistory[i]
-    const spot     = spotBar.close
-    const prevSpot = i > 0 ? spotHistory[i - 1].close : spotBar.open
-    const spotRet  = (spot - prevSpot) / prevSpot
-
-    // Decay time-to-expiry slightly across the history window
-    const tte = Math.max(tte0 - (i / nBars) * 0.03, 0.005)
-    const g   = calcGreeks(spot, strike, tte, iv, type)
-
-    // Option elasticity (lambda): % change in option for % change in spot
-    const lambda = g.delta * (spot / Math.max(price, 0.01))
-
-    const optRet = lambda * spotRet + randn(rng) * idioVol
-    const open   = price
-    const close  = Math.max(open * (1 + optRet), 0.05)
-    const range  = Math.abs(randn(rng)) * 0.008
-    const high   = Math.max(open, close) * (1 + range)
-    const low    = Math.min(open, close) * (1 - range)
+    const bar = spotHistory[i]
+    const tte     = Math.max(tte0 - (i / nBars) * (tte0 - 0.008), 0.005)
+    // IV vol-of-vol: ±4% per bar (realistic surface noise)
+    const iv      = iv0 * (1 + (rng() - 0.5) * 0.08)
+    const bsPrice = calcGreeks(bar.close, strike, tte, iv, type).price
+    // ±4% noise per bar — produces realistic candle swings instead of smooth BS curve
+    const noise   = (rng() - 0.5) * 0.08
+    const close   = Math.max(bsPrice * (1 + noise), 0.05)
+    const open    = prevClose ?? close
+    // Wicks: 1–5% range, occasionally larger (realistic option spread + slippage)
+    const range   = (0.01 + rng() * 0.04) * (1 + rng() * rng() * 2)
     bars.push({
-      time:   spotBar.time,
+      time:   bar.time,
       open:   +open.toFixed(2),
-      high:   +high.toFixed(2),
-      low:    +low.toFixed(2),
+      high:   +(Math.max(open, close) * (1 + range)).toFixed(2),
+      low:    +(Math.min(open, close) * (1 - range * 0.6)).toFixed(2),
       close:  +close.toFixed(2),
       volume: Math.floor(500 + rng() * 9500),
     })
-    price = close
+    prevClose = close
   }
   return bars
 }
@@ -156,20 +155,28 @@ export const SPOT_HISTORY    = generateHistory(1310,  0.005, 200, 11, 0.00030)
 export const OPTION_HISTORY  = generateHistory(452,   0.014, 200, 77, 0.00040)
 export const SENSEX_HISTORY  = generateHistory(25460, 0.003, 200, 53, 0.00018)
 
-// NIFTY underlying — moderate uptrend with realistic intraday volatility
-export const NIFTY_HISTORY     = generateHistory(27820, 0.003, 200, 31, 0.00020)
-// CE and PE use proper delta-based (Black-Scholes elasticity) movement
-export const NIFTY_CE_HISTORY  = generateOptionHistory(NIFTY_HISTORY, 350, 27500, 'CE', 83, 0.12, 0.22)
-export const NIFTY_OPT_HISTORY = generateOptionHistory(NIFTY_HISTORY, 320, 27500, 'PE', 91, 0.12, 0.22)
+// NIFTY: realistic 5-min candles (~30–60pt range), mean-reverting around 25000
+export const NIFTY_HISTORY = generateHistory(25000, 0.002, 200, 57, 0, 0.04)
 
-// Current live prices — match reference screenshot exactly for initial display
+// ATM strike anchored to history start (≈ basePrice) — options begin ATM; mean reversion keeps them balanced
+export const ATM_STRIKE = Math.round(NIFTY_HISTORY[0].close / 50) * 50
+
+// Inject Nifty option instruments now that we know the ATM strike
+INSTRUMENTS.NIFTY_CE = { name: `NIFTY ${ATM_STRIKE} CE`, type: 'option', optType: 'CE', strike: ATM_STRIKE, lotSize: 25, basePrice: 110 }
+INSTRUMENTS.NIFTY_PE = { name: `NIFTY ${ATM_STRIKE} PE`, type: 'option', optType: 'PE', strike: ATM_STRIKE, lotSize: 25, basePrice: 105 }
+
+// History: tte decays from 38-day to 8-day (weekly nearing expiry). Direct BS pricing → always realistic.
+export const NIFTY_CE_HISTORY  = generateOptionHistory(NIFTY_HISTORY, 0, ATM_STRIKE, 'CE', 83, 0.038, 0.14)
+export const NIFTY_OPT_HISTORY = generateOptionHistory(NIFTY_HISTORY, 0, ATM_STRIKE, 'PE', 91, 0.038, 0.14)
+
+// Current live prices
 export const currentPrices = {
-  TATAPOWER:     SPOT_HISTORY.at(-1).close,
-  OPT_360PE:     OPTION_HISTORY.at(-1).close,
-  NIFTY:         NIFTY_HISTORY.at(-1).close,
-  NIFTY_27500PE: NIFTY_OPT_HISTORY.at(-1).close,
-  NIFTY_27500CE: NIFTY_CE_HISTORY.at(-1).close,
-  SENSEX:        25648.65,
+  TATAPOWER: SPOT_HISTORY.at(-1).close,
+  OPT_360PE: OPTION_HISTORY.at(-1).close,
+  NIFTY:     NIFTY_HISTORY.at(-1).close,
+  NIFTY_CE:  NIFTY_CE_HISTORY.at(-1).close,
+  NIFTY_PE:  NIFTY_OPT_HISTORY.at(-1).close,
+  SENSEX:    25648.65,
 }
 
 // Reference display values — shown in headers on first render
@@ -181,8 +188,8 @@ export const REFERENCE_DISPLAY = {
   leftChange:   '+12.25 (8.25%)',
   rightPrice:   '210.10',
   rightChange:  '+65.21 (14.22%)',
-  niftyPrice:   '&#8377;28,048.65',
-  niftyDelta:   '&#9650; 241.25 (0.95%)',
+  niftyPrice:   '&#8377;24,950.00',
+  niftyDelta:   '&#9650; 84.20 (0.34%)',
   niftyUp:      true,
   sensexPrice:  '&#8377;25,648.65',
   sensexDelta:  '&#9660; 14.87 (3.48%)',
@@ -192,14 +199,17 @@ export const REFERENCE_DISPLAY = {
 }
 
 // ── Option chain ────────────────────────────────────────────
-const STRIKES = [25000, 25500, 26000, 26500, 27000, 27500, 28000, 28500, 29000, 29500, 30000]
+// Generate strikes centered on ATM_STRIKE: ±2000 pts at 50-pt intervals
+const _atkLow  = Math.round((ATM_STRIKE - 2000) / 50) * 50
+const _atkHigh = Math.round((ATM_STRIKE + 2000) / 50) * 50
+const STRIKES  = Array.from({ length: (_atkHigh - _atkLow) / 50 + 1 }, (_, i) => _atkLow + i * 50)
 
 function fakeOI(base, rng) {
   return Math.floor(base * (0.7 + rng() * 0.6))
 }
 
 // buildOptionChain uses Black-Scholes for accurate prices and Greeks
-export function buildOptionChain(spot, tte = 0.08, iv = 0.22) {
+export function buildOptionChain(spot, tte = 0.008, iv = 0.14) {
   const rng = mkRng(Math.floor(spot * 100) % 999983)
   const atm = STRIKES.reduce((a, b) => Math.abs(a - spot) < Math.abs(b - spot) ? a : b)
 
@@ -252,14 +262,15 @@ function intradayVolMultiplier(elapsedSeconds) {
 class PriceEngine {
   constructor() {
     this._handlers    = {}
-    this._vols        = {}       // base vols per instrument
+    this._vols        = {}
     this._prices      = {}
-    this._spreads     = {}       // { id: { bid, ask } }
+    this._startPrices = {}       // anchor for mean reversion
+    this._spreads     = {}
     this._bars        = {}
     this._ticks       = {}
-    this._garchVol    = {}       // GARCH-lite running vol per instrument
-    this._optionCfg   = {}       // { id: { underlying, strike, type, tte, iv } }
-    this._elapsed     = 0        // total ticks since start (for intraday clock)
+    this._garchVol    = {}
+    this._optionCfg   = {}
+    this._elapsed     = 0
     this.TICKS_PER_CANDLE = 30
     this._timer       = null
   }
@@ -273,8 +284,9 @@ class PriceEngine {
   }
 
   register(id, startPrice, vol) {
-    this._prices[id]   = startPrice
-    this._vols[id]     = vol
+    this._prices[id]      = startPrice
+    this._startPrices[id] = startPrice
+    this._vols[id]        = vol
     this._garchVol[id] = vol     // GARCH starts at base vol
     this._ticks[id]    = 0
     const hs = this._halfSpread(id, startPrice)
@@ -328,7 +340,7 @@ class PriceEngine {
     for (const id of Object.keys(this._prices)) {
       const last    = this._prices[id]
       const baseVol = this._vols[id]
-      const drift   = 0.00004
+      const drift   = 0.000002
       let newPrice
 
       const optCfg = this._optionCfg[id]
@@ -346,17 +358,16 @@ class PriceEngine {
         const lambda = g.delta * (spotNow / Math.max(last, 0.01))
 
         // Small IV randomness (vol-of-vol)
-        const ivNudge = (Math.random() - 0.5) * 0.004
+        const ivNudge = (Math.random() - 0.5) * 0.00006
         optCfg.iv     = Math.max(0.05, Math.min(optCfg.iv + ivNudge, 0.80))
 
         // Small idio noise (5% of normal GBM magnitude)
-        const idio = (Math.random() - 0.5) * 0.005 * last * volMult
+        const idio = (Math.random() - 0.5) * 0.000075 * last * volMult
 
         newPrice = Math.max(last + lambda * last * spotRet + idio, 0.05)
 
       } else {
-        // ── Standard GARCH + intraday GBM (for underlying / index) ──
-        // GARCH-lite: creates calm/volatile regimes instead of uniform noise
+        // ── GARCH + mean-reverting GBM (Ornstein-Uhlenbeck flavour) ──
         const prevGarch = this._garchVol[id]
         const shock     = (Math.random() - 0.5) * 2
         const garchVol  = Math.sqrt(0.88 * prevGarch ** 2 + 0.12 * (baseVol * shock) ** 2)
@@ -365,7 +376,12 @@ class PriceEngine {
         const effectiveVol = this._garchVol[id] * volMult
         const u1 = Math.random(), u2 = Math.random()
         const z  = Math.sqrt(-2 * Math.log(Math.max(u1, 1e-10))) * Math.cos(2 * Math.PI * u2)
-        newPrice = Math.max(last * (1 + drift + effectiveVol * z), 0.01)
+
+        // Gentle mean reversion toward start price — prevents one-directional drift
+        const anchor  = this._startPrices[id] || last
+        const meanRev = 0.0008 * (anchor - last) / anchor
+
+        newPrice = Math.max(last * (1 + meanRev + effectiveVol * z), 0.01)
       }
 
       this._prices[id] = newPrice

@@ -3,8 +3,8 @@
 // ═══════════════════════════════════════════════════════════
 // Force full page reload on HMR — avoids dead price engine after hot swap
 if (import.meta.hot) import.meta.hot.decline()
-import { initCharts, updateCECandle, updateUnderlyingCandle, updatePECandle, switchCEChart, switchPEChart, drawOrderLine, updateOrderLine, removeOrderLine, drawPositionLine, subscribeChartCrosshair, getPriceY, getPriceFromY, resizeCharts, getVisibleRanges, restoreVisibleRanges } from './charts.js'
-import { priceEngine, currentPrices, INSTRUMENTS, buildOptionChain, generateHistory } from './data.js'
+import { initCharts, updateCECandle, updateUnderlyingCandle, updatePECandle, switchCEChart, switchPEChart, drawOrderLine, updateOrderLine, removeOrderLine, drawPositionLine, subscribeChartCrosshair, subscribeChartRangeChange, getPriceY, getPriceFromY, resizeCharts, getVisibleRanges, restoreVisibleRanges, snapPriceRange } from './charts.js'
+import { priceEngine, currentPrices, INSTRUMENTS, ATM_STRIKE, buildOptionChain, generateHistory } from './data.js'
 import * as store from './store.js'
 import { $, $$, fmtPrice, fmtPriceShort, fmtChange, fmtPnl, fmtPct, fmtOI } from './utils.js'
 
@@ -58,7 +58,7 @@ let _orderOverlayState = {
 const _basePrice = { ...currentPrices }
 const HEADER_MIN_PINNED = 2
 const HEADER_INDEX_ITEMS = [
-  { key: 'NIFTY', label: 'NIFTY 50', menuLabel: 'NIFTY', price: 28048.65, delta: 241.25, pct: 0.95, currency: true },
+  { key: 'NIFTY', label: 'NIFTY 50', menuLabel: 'NIFTY', price: 24950.00, delta: 84.20, pct: 0.34, currency: true },
   { key: 'SENSEX', label: 'SENSEX', menuLabel: 'SENSEX', price: 25648.65, delta: 191.91, pct: 0.75, currency: true },
   { key: 'BANKNIFTY', label: 'BANKNIFTY', menuLabel: 'BANKNIFTY', price: 55293.65, delta: 1238.30, pct: 2.29, currency: false },
   { key: 'BANKEX', label: 'BANKEX', menuLabel: 'BANKEX', price: 62289.98, delta: 1385.53, pct: 2.27, currency: false },
@@ -119,6 +119,27 @@ let _optionMetricTimer = null
 let _chartOverlayContainer = null
 const _posOverlays = {}   // posId → { chartId, el, entryPrice, chartEl }
 const _priceHandles = {}  // id → draggable limit / SL / TP chart handles
+
+// ── Bid/Ask Chart Overlay state ──────────────────────────────
+let _baOverlayOn   = false
+let _baMode        = localStorage.getItem('scalper_ba_mode') || 'hover' // 'clean'|'hover'|'always'
+const _baTagEls    = {}     // chartId → { bid, ask, spread }
+const _baHovering      = { ce: false, pe: false }
+const _baHoverTimers   = {}
+const _baDomHideTimers = {}
+let _baDomPinned       = false   // global pin — controlled from B/A settings
+const _baDomTier = {             // computed each frame, read by _buildBaDomContent
+  ce: { rowH: 16, aggStep: 0.05, aggMult: 1, bids: [], asks: [], levels: 0 },
+  pe: { rowH: 16, aggStep: 0.05, aggMult: 1, bids: [], asks: [], levels: 0 },
+}
+const _BA_SCALE_W  = 65     // approx LightweightCharts right price-scale width (px)
+const _BA_TAG_H    = 20     // tag height (px)
+
+function _fmtQtyCompact(q) {
+  if (q >= 10000) return `${(q / 1000).toFixed(0)}k`
+  if (q >= 1000)  return `${(q / 1000).toFixed(1)}k`
+  return String(q)
+}
 
 // ── Market Depth Tray state ──────────────────────────────────
 const _depthBooks = {
@@ -190,50 +211,54 @@ document.addEventListener('DOMContentLoaded', () => {
   wireDrawingToolbar()
   wireChartToast()
   wireDepthTray()
+  _wireBaToggle()
+  _wireBaSettings()
   startPositionOverlayLoop()
   startPriceHandleLoop()
   priceEngine.start()
   // Seed depth books from initial prices
-  _initDepthBook('ce',         currentPrices.NIFTY_27500CE || 300)
-  _initDepthBook('pe',         currentPrices.NIFTY_27500PE || 150)
+  _initDepthBook('ce',         currentPrices.NIFTY_CE || 300)
+  _initDepthBook('pe',         currentPrices.NIFTY_PE || 150)
   _initDepthBook('underlying', currentPrices.NIFTY         || 24000)
   _renderDepthTrayBar()
 })
 
 // ── Seed price engine ────────────────────────────────────────
 function seedPriceEngine() {
-  priceEngine.register('NIFTY',  currentPrices.NIFTY,  0.0008)
-  priceEngine.register('SENSEX', currentPrices.SENSEX, 0.0008)
+  // baseVol = per-tick σ of returns. 0.00022 → ~0.12% per 5-min candle (≈30pt on Nifty) — realistic intraday.
+  priceEngine.register('NIFTY',  currentPrices.NIFTY,  0.00022)
+  priceEngine.register('SENSEX', currentPrices.SENSEX, 0.00015)
   // CE/PE use delta-linked pricing — must register AFTER NIFTY so it's in the tick loop first
-  priceEngine.registerOption('NIFTY_27500CE', currentPrices.NIFTY_27500CE, {
-    underlying: 'NIFTY', strike: 27500, type: 'CE', tte: 0.08, iv: 0.22,
+  priceEngine.registerOption('NIFTY_CE', currentPrices.NIFTY_CE, {
+    underlying: 'NIFTY', strike: ATM_STRIKE, type: 'CE', tte: 0.008, iv: 0.14,
   })
-  priceEngine.registerOption('NIFTY_27500PE', currentPrices.NIFTY_27500PE, {
-    underlying: 'NIFTY', strike: 27500, type: 'PE', tte: 0.08, iv: 0.22,
+  priceEngine.registerOption('NIFTY_PE', currentPrices.NIFTY_PE, {
+    underlying: 'NIFTY', strike: ATM_STRIKE, type: 'PE', tte: 0.008, iv: 0.14,
   })
 
   store.updatePrice('NIFTY',         currentPrices.NIFTY)
-  const _ceBA = priceEngine.getBidAsk('NIFTY_27500CE')
-  const _peBA = priceEngine.getBidAsk('NIFTY_27500PE')
-  store.updatePrice('NIFTY_27500CE', currentPrices.NIFTY_27500CE, _ceBA.bid, _ceBA.ask)
-  store.updatePrice('NIFTY_27500PE', currentPrices.NIFTY_27500PE, _peBA.bid, _peBA.ask)
+  const _ceBA = priceEngine.getBidAsk('NIFTY_CE')
+  const _peBA = priceEngine.getBidAsk('NIFTY_PE')
+  store.updatePrice('NIFTY_CE', currentPrices.NIFTY_CE, _ceBA.bid, _ceBA.ask)
+  store.updatePrice('NIFTY_PE', currentPrices.NIFTY_PE, _peBA.bid, _peBA.ask)
 
   priceEngine.on('tick', ({ id, price, bid, ask }) => {
     store.updatePrice(id, price, bid, ask)
     _checkRiskLevels(id, price)
     updateDepthOnTick(id, price, bid, ask)
     _tickDepthTray(id, price)
+    _updateBaOverlays()
     if (id === 'NIFTY')         { updateNiftyChip(price); updateUnderlyingHeader(price) }
-    if (id === 'NIFTY_27500CE') { updateCEHeader(price); _updateTpaPrice('ce', price) }
-    if (id === 'NIFTY_27500PE') { updatePEHeader(price); _updateTpaPrice('pe', price) }
+    if (id === 'NIFTY_CE') { updateCEHeader(price); _updateTpaPrice('ce', price) }
+    if (id === 'NIFTY_PE') { updatePEHeader(price); _updateTpaPrice('pe', price) }
     if (id === 'SENSEX')        updateSensexChip(price)
     if (id === 'NIFTY' && _oiProfileOn) _drawOiProfile()
   })
 
   priceEngine.on('candleUpdate', ({ id, bar }) => {
     if (id === 'NIFTY')         updateUnderlyingCandle(bar)
-    if (id === 'NIFTY_27500CE') updateCECandle(bar)
-    if (id === 'NIFTY_27500PE') updatePECandle(bar)
+    if (id === 'NIFTY_CE') updateCECandle(bar)
+    if (id === 'NIFTY_PE') updatePECandle(bar)
   })
 }
 
@@ -322,7 +347,7 @@ function updateUnderlyingHeader(price) {
   }
 }
 
-let _ceBase = currentPrices.NIFTY_27500CE
+let _ceBase = currentPrices.NIFTY_CE
 function updateCEHeader(price) {
   const change = price - _ceBase
   const pct    = (change / _ceBase) * 100
@@ -335,7 +360,7 @@ function updateCEHeader(price) {
   }
 }
 
-let _peBase = currentPrices.NIFTY_27500PE
+let _peBase = currentPrices.NIFTY_PE
 function updatePEHeader(price) {
   const change = price - _peBase
   const pct    = (change / _peBase) * 100
@@ -406,19 +431,19 @@ function updateCompactMode() {
 // ── Shared strike switcher — updates BOTH CE and PE charts simultaneously ──
 function switchBothLegsToStrike(strike) {
   const seed = parseInt(strike) % 97 + 1
-  const ceHist = generateHistory(currentPrices.NIFTY_27500CE, 0.028, 200, seed)
-  const peHist = generateHistory(currentPrices.NIFTY_27500PE, 0.028, 200, seed + 7)
+  const ceHist = generateHistory(currentPrices.NIFTY_CE, 0.028, 200, seed)
+  const peHist = generateHistory(currentPrices.NIFTY_PE, 0.028, 200, seed + 7)
 
   switchCEChart(ceHist)
   _ceBase = ceHist.at(-1).close
   $('#ce-chart-price').textContent = _ceBase.toFixed(2)
-  $('#switch-ce-btn').textContent  = `27 Mar ${strike} ▾`
+  $('#switch-ce-btn').textContent  = `26 Jun ${strike} ▾`
   $('#trade-call-switch strong').innerHTML = `${strike} CALL <span>OTM 28</span>`
 
   switchPEChart(peHist)
   _peBase = peHist.at(-1).close
   $('#pe-chart-price').textContent = _peBase.toFixed(2)
-  $('#switch-pe-btn').textContent  = `27 Mar ${strike} ▾`
+  $('#switch-pe-btn').textContent  = `26 Jun ${strike} ▾`
   $('#trade-put-switch strong').innerHTML  = `${strike} PUT <span>OTM 13</span>`
 }
 
@@ -1041,6 +1066,7 @@ function _applyChartVisibility() {
 
   _renderDepthTrayBar()
   if (_trayOpen) _renderDepthTrayBody()
+  _updateBaOverlays()
 }
 
 // ── PnL Switcher (Active ↔ Net swap) ─────────────────────────
@@ -1067,11 +1093,11 @@ function wireBuySellBars() {
   $('#pe-dec').addEventListener('click',  () => { peQty = Math.max(NIFTY_LOT, peQty - NIFTY_LOT); updateQtyDisplay('pe') })
 
   // CE buy/sell
-  $('#ce-buy').addEventListener('click',  () => handleOrder('BUY',  'ce', 'NIFTY_27500CE'))
-  $('#ce-sell').addEventListener('click', () => handleOrder('SELL', 'ce', 'NIFTY_27500CE'))
+  $('#ce-buy').addEventListener('click',  () => handleOrder('BUY',  'ce', 'NIFTY_CE'))
+  $('#ce-sell').addEventListener('click', () => handleOrder('SELL', 'ce', 'NIFTY_CE'))
   // PE buy/sell
-  $('#pe-buy').addEventListener('click',  () => handleOrder('BUY',  'pe', 'NIFTY_27500PE'))
-  $('#pe-sell').addEventListener('click', () => handleOrder('SELL', 'pe', 'NIFTY_27500PE'))
+  $('#pe-buy').addEventListener('click',  () => handleOrder('BUY',  'pe', 'NIFTY_PE'))
+  $('#pe-sell').addEventListener('click', () => handleOrder('SELL', 'pe', 'NIFTY_PE'))
 
   // Spot/Futures toggle in underlying bar
   const sfTrack = $('#spot-futures-track')
@@ -1809,7 +1835,7 @@ function hideOrderOverlay() {
 function confirmLimitOrder() {
   if (!pendingOrderSide || !pendingOrderChart) return
 
-  const instrumentId = _orderOverlayState.instrumentId || (pendingOrderChart === 'ce' ? 'NIFTY_27500CE' : 'NIFTY_27500PE')
+  const instrumentId = _orderOverlayState.instrumentId || (pendingOrderChart === 'ce' ? 'NIFTY_CE' : 'NIFTY_PE')
   const inst = INSTRUMENTS[instrumentId] || { lotSize: NIFTY_LOT, type: 'option', name: instrumentId }
   const qty = Math.max(1, _orderOverlayState.quantity) * (inst.lotSize || NIFTY_LOT)
 
@@ -2089,8 +2115,8 @@ function _updateTpaPrice(side, price) {
 let _tradePreset = 'buy-only'
 
 const _TPA_CFG = [
-  { side: 'ce', instrId: 'NIFTY_27500CE', panelSel: '.trade-panel-call' },
-  { side: 'pe', instrId: 'NIFTY_27500PE', panelSel: '.trade-panel-put' },
+  { side: 'ce', instrId: 'NIFTY_CE', panelSel: '.trade-panel-call' },
+  { side: 'pe', instrId: 'NIFTY_PE', panelSel: '.trade-panel-put' },
 ]
 
 function wireTradePresets() {
@@ -2246,7 +2272,7 @@ function _toggleTpaMode(side) {
   btn.classList.toggle('hidden', isNowLimit)
   input.classList.toggle('hidden', !isNowLimit)
   if (isNowLimit) {
-    const instrId = side === 'ce' ? 'NIFTY_27500CE' : 'NIFTY_27500PE'
+    const instrId = side === 'ce' ? 'NIFTY_CE' : 'NIFTY_PE'
     const currentPrice = store.state.prices[instrId]
     if (currentPrice) input.value = currentPrice.toFixed(2)
     input.focus()
@@ -2304,10 +2330,10 @@ function toggleDepthPanel() {
   _depthOpen = opening
   if (opening) {
     closePnlPanel()
-    const ce = store.state.spreads['NIFTY_27500CE']
-    const pe = store.state.spreads['NIFTY_27500PE']
-    if (ce) _renderDepth('ce', store.state.prices['NIFTY_27500CE'], ce.bid, ce.ask)
-    if (pe) _renderDepth('pe', store.state.prices['NIFTY_27500PE'], pe.bid, pe.ask)
+    const ce = store.state.spreads['NIFTY_CE']
+    const pe = store.state.spreads['NIFTY_PE']
+    if (ce) _renderDepth('ce', store.state.prices['NIFTY_CE'], ce.bid, ce.ask)
+    if (pe) _renderDepth('pe', store.state.prices['NIFTY_PE'], pe.bid, pe.ask)
   }
   updateCompactMode()
 }
@@ -2340,7 +2366,7 @@ function _renderDepth(side, price, bid, ask) {
   const nameEl   = $(`#depth-${side}-label`)
   if (!levelsEl) return
 
-  if (nameEl) nameEl.textContent = side === 'ce' ? '27500 CE' : '27500 PE'
+  if (nameEl) nameEl.textContent = side === 'ce' ? `${ATM_STRIKE} CE` : `${ATM_STRIKE} PE`
   if (ltpEl)  ltpEl.textContent  = '₹' + price.toFixed(2)
 
   const { asks, bids } = _genDepthLevels(bid, ask)
@@ -2372,16 +2398,13 @@ function updateDepthOnTick(id, price, bid, ask) {
   if (!_depthOpen || !bid || !ask) return
   _depthTick++
   if (_depthTick % 3 !== 0) return
-  if (id === 'NIFTY_27500CE') _renderDepth('ce', price, bid, ask)
-  if (id === 'NIFTY_27500PE') _renderDepth('pe', price, bid, ask)
+  if (id === 'NIFTY_CE') _renderDepth('ce', price, bid, ask)
+  if (id === 'NIFTY_PE') _renderDepth('pe', price, bid, ask)
 }
 
 // ── Market Depth Tray ────────────────────────────────────────
-function _depthTickSize(price) {
-  if (price < 25)  return 0.05
-  if (price < 100) return 0.25
-  if (price < 500) return 0.50
-  return 1.00
+function _depthTickSize(_price) {
+  return 0.05  // NSE equity derivatives: uniform ₹0.05 tick
 }
 
 function _initDepthBook(key, mid) {
@@ -2391,16 +2414,16 @@ function _initDepthBook(key, mid) {
     qty: Math.round(300 + Math.random() * 1700),
   })
   _depthBooks[key] = {
-    bids: Array.from({ length: 5 }, (_, i) => mk('bid', i)),
-    asks: Array.from({ length: 5 }, (_, i) => mk('ask', i)),
+    bids: Array.from({ length: 20 }, (_, i) => mk('bid', i)),
+    asks: Array.from({ length: 20 }, (_, i) => mk('ask', i)),
     lastUpdate: Date.now(), mid,
   }
 }
 
 let _trayTickCount = 0
 function _tickDepthTray(instrId, price) {
-  const key = instrId === 'NIFTY_27500CE' ? 'ce'
-            : instrId === 'NIFTY_27500PE' ? 'pe'
+  const key = instrId === 'NIFTY_CE' ? 'ce'
+            : instrId === 'NIFTY_PE' ? 'pe'
             : instrId === 'NIFTY'         ? 'underlying'
             : null
   if (!key) return
@@ -2507,14 +2530,14 @@ function _buildDepthPanel(key) {
   const imbCls   = bidPct > 55 ? 'bid' : askPct > 55 ? 'ask' : 'bal'
 
   // Instrument name with strike if available
-  const instrId  = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : null
+  const instrId  = key === 'ce' ? 'NIFTY_CE' : key === 'pe' ? 'NIFTY_PE' : null
   const strike   = instrId ? INSTRUMENTS[instrId]?.strike : null
   const optType  = key === 'ce' ? 'CE' : key === 'pe' ? 'PE' : ''
   const name     = strike ? `NIFTY ${strike} ${optType}` : key === 'underlying' ? 'NIFTY 50' : `NIFTY ${optType}`
 
-  // Levels 2-5 for the ladder (best level shown in TOB band)
-  const ladderBids = bids.slice(1)
-  const ladderAsks = asks.slice(1)
+  // Levels 2-5 for the ladder (best level shown in TOB band; full 20 stored for hover DOM)
+  const ladderBids = bids.slice(1, 5)
+  const ladderAsks = asks.slice(1, 5)
   const maxQty  = Math.max(...ladderBids.map(b => b.qty), ...ladderAsks.map(a => a.qty), 1)
   const barPct  = q => ((q / maxQty) * 100).toFixed(1)
 
@@ -2609,7 +2632,7 @@ function wireDepthTray() {
       const key     = priceEl.dataset.key
       const side    = priceEl.dataset.side === 'bid' ? 'BUY' : 'BUY'
       const chartId = key === 'ce' ? 'ce' : key === 'pe' ? 'pe' : 'underlying'
-      const instrId = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+      const instrId = key === 'ce' ? 'NIFTY_CE' : key === 'pe' ? 'NIFTY_PE' : 'NIFTY'
       showOrderOverlay(side, chartId, instrId, price)
       return
     }
@@ -2618,7 +2641,7 @@ function wireDepthTray() {
     if (actBtn) {
       const key     = actBtn.dataset.key
       const chartId = actBtn.dataset.chart
-      const instrId = key === 'ce' ? 'NIFTY_27500CE' : key === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+      const instrId = key === 'ce' ? 'NIFTY_CE' : key === 'pe' ? 'NIFTY_PE' : 'NIFTY'
       const book    = _depthBooks[key]
       if (!book.bids.length) return
       const act = actBtn.dataset.act
@@ -2627,6 +2650,384 @@ function wireDepthTray() {
                   : +((book.bids[0].price + book.asks[0].price) / 2).toFixed(2)
       showOrderOverlay('BUY', chartId, instrId, price)
     }
+  })
+}
+
+// ── DOM optimal-zoom snap ────────────────────────────────────
+// Snaps CE and PE price scales to show _BA_MIN_ROW_H px per base tick (₹0.05).
+// Must account for rightPriceScale margins (top:0.08, bottom:0.28) — only 64% of chart
+// height is used for the actual price content, so halfRange must be scaled down by the
+// same factor or priceToCoordinate will report fewer px/tick than expected.
+// After snapping we must also force _updateBaOverlays because subscribeChartRangeChange
+// only watches the time scale — a vertical price-scale snap never triggers it.
+const _SCALE_CONTENT = 1 - 0.08 - 0.28  // fraction of chart height used for price content
+function _snapDomZoom() {
+  const instrMap = { ce: 'NIFTY_CE', pe: 'NIFTY_PE' }
+  ;['ce', 'pe'].forEach(chartId => {
+    const book  = _depthBooks[chartId]
+    const price = book?.mid || priceEngine.getPrice(instrMap[chartId])
+    if (!price) return
+    const chartEl = document.getElementById(`${chartId}-chart`)
+    if (!chartEl || !chartEl.clientHeight) return
+    const halfRange = (chartEl.clientHeight * _SCALE_CONTENT * _BA_BASE_TICK) / (2 * _BA_MIN_ROW_H)
+    snapPriceRange(chartId, price, halfRange)
+  })
+  // Chart re-renders in the next rAF after applyOptions — wait two frames so
+  // priceToCoordinate returns values from the new scale before we re-measure.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (_baOverlayOn) _updateBaOverlays()
+  }))
+}
+
+// ── Bid/Ask Chart Overlay ────────────────────────────────────
+function _wireBaToggle() {
+  const btn = $('#ba-toggle-btn')
+  if (!btn) return
+  if (localStorage.getItem('scalper_ba_overlay') === '1') {
+    _baOverlayOn = true
+    _baDomPinned = true
+    btn.classList.add('active')
+    _createBaOverlays()
+    ;['ce', 'pe'].forEach(id => _showBaDomPanel(id))
+  }
+  btn.addEventListener('click', () => {
+    _baOverlayOn = !_baOverlayOn
+    _baDomPinned = _baOverlayOn
+    btn.classList.toggle('active', _baOverlayOn)
+    if (_baOverlayOn) {
+      _createBaOverlays()
+      _updateBaOverlays()
+      _snapDomZoom()
+      ;['ce', 'pe'].forEach(id => _showBaDomPanel(id))
+    } else {
+      _removeBaOverlays()
+    }
+    localStorage.setItem('scalper_ba_overlay', _baOverlayOn ? '1' : '0')
+  })
+
+  // Re-anchor overlays whenever the user pans or zooms a CE/PE chart
+  // so the DOM panel and pair tags track the price Y position live
+  ;['ce', 'pe'].forEach(chartId => {
+    subscribeChartRangeChange(chartId, () => { if (_baOverlayOn) _updateBaOverlays() })
+  })
+}
+
+function _createBaOverlays() {
+  ;['ce', 'pe'].forEach(chartId => {
+    if (_baTagEls[chartId]) return
+    const instrId = chartId === 'ce' ? 'NIFTY_CE' : 'NIFTY_PE'
+
+    // Single pair element: ask row on top, bid row on bottom — positioned at mid price
+    const pair = document.createElement('div')
+    pair.className = 'ba-pair'
+    pair.style.display = 'none'
+    pair.innerHTML = `<div class="ba-pair-row ba-pair-ask" data-side="ask"><span class="ba-pair-label">A</span><span class="ba-pair-price"></span><span class="ba-pair-qty"></span></div><div class="ba-pair-row ba-pair-bid" data-side="bid"><span class="ba-pair-label">B</span><span class="ba-pair-price"></span><span class="ba-pair-qty"></span></div>`
+    // Only fire order overlay on a clean click (not a drag on the price scale)
+    let _pairDownX = 0, _pairDownY = 0
+    pair.addEventListener('mousedown', e => { _pairDownX = e.clientX; _pairDownY = e.clientY })
+    pair.addEventListener('click', e => {
+      if (Math.hypot(e.clientX - _pairDownX, e.clientY - _pairDownY) > 4) return  // was a drag
+      const row = e.target.closest('.ba-pair-row[data-side]')
+      if (!row) return
+      const book = _depthBooks[chartId]
+      if (row.dataset.side === 'ask' && book?.asks?.[0]) showOrderOverlay('BUY', chartId, instrId, book.asks[0].price)
+      else if (row.dataset.side === 'bid' && book?.bids?.[0])  showOrderOverlay('BUY', chartId, instrId, book.bids[0].price)
+    })
+
+    const spread = document.createElement('div')
+    spread.className = 'ba-spread'
+    spread.style.display = 'none'
+
+    // DOM preview panel — pointer-events:none on container so chart interactions pass through;
+    // only interactive children (rows, buttons) re-enable pointer events via CSS
+    const domPanel = document.createElement('div')
+    domPanel.className = 'ba-dom-panel hidden'
+
+    const startHideTimer = () => {
+      if (_baDomPinned) return
+      clearTimeout(_baDomHideTimers[chartId])
+      _baDomHideTimers[chartId] = setTimeout(() => domPanel.classList.add('hidden'), 600)
+    }
+    const cancelHide = () => clearTimeout(_baDomHideTimers[chartId])
+
+    // Pair tag hover opens the DOM panel
+    pair.addEventListener('mouseenter', () => { cancelHide(); _showBaDomPanel(chartId) })
+    pair.addEventListener('mouseleave', startHideTimer)
+
+    // Scale-zone entry detected via mousemove on the chart wrapper — no blocking div needed.
+    // mousemove on the wrapper fires even when cursor is over the DOM panel (panel passes
+    // events through) so hide/show stays correct the whole time.
+    const chartWrapper = document.getElementById(`${chartId}-chart-wrapper`)
+    if (chartWrapper) {
+      let _inScaleZone = false
+      chartWrapper.addEventListener('mousemove', e => {
+        if (!_baOverlayOn) return
+        const r = chartWrapper.getBoundingClientRect()
+        // Include price scale strip in the zone so crossing it (pair tag → DOM panel) cancels the hide timer
+        const inZone = e.clientX >= r.right - _BA_SCALE_W - _BA_DOM_W
+        if (inZone && !_inScaleZone)  { cancelHide(); _showBaDomPanel(chartId) }
+        else if (!inZone && _inScaleZone) { startHideTimer() }
+        _inScaleZone = inZone
+      })
+      chartWrapper.addEventListener('mouseleave', () => {
+        _inScaleZone = false
+        startHideTimer()
+      })
+    }
+
+    // Prevent DOM panel clicks/mousedowns from bleeding through to the chart canvas
+    domPanel.addEventListener('mousedown', e => e.stopPropagation())
+    domPanel.addEventListener('click', e => {
+      e.stopPropagation()
+      const cell = e.target.closest('.ba-dom-bid-cell[data-price], .ba-dom-ask-cell[data-price]')
+      if (cell?.dataset.price) {
+        const instrId = chartId === 'ce' ? 'NIFTY_CE' : 'NIFTY_PE'
+        const side    = cell.classList.contains('ba-dom-bid-cell') ? 'SELL' : 'BUY'
+        showOrderOverlay(side, chartId, instrId, parseFloat(cell.dataset.price))
+      }
+    })
+
+    _chartOverlayContainer.appendChild(pair)
+    _chartOverlayContainer.appendChild(spread)
+    _chartOverlayContainer.appendChild(domPanel)
+    _baTagEls[chartId] = { pair, spread, domPanel }
+  })
+}
+
+function _removeBaOverlays() {
+  Object.values(_baTagEls).forEach(({ pair, spread, domPanel }) => {
+    pair.remove(); spread.remove(); domPanel.remove()
+  })
+  Object.keys(_baTagEls).forEach(k => delete _baTagEls[k])
+}
+
+function _showBaDomPanel(chartId) {
+  const tags = _baTagEls[chartId]
+  if (!tags) return
+  _buildBaDomContent(chartId)
+  tags.domPanel.classList.remove('hidden')
+}
+
+const _BA_DOM_W      = 72     // panel width (px)
+const _BA_BASE_TICK  = 0.05   // NSE equity derivatives base tick size
+const _BA_MIN_ROW_H  = 14     // minimum row height before next aggregation tier
+const _BA_MAX_ROW_H  = 40     // maximum row height cap
+const _BA_MAX_LEVELS = 20     // max rows to show
+const _BA_AGG_MULTS  = [1, 2, 5, 10, 20, 50, 100, 200]  // tick aggregation multipliers
+
+function _aggregateBook(rawBids, rawAsks, aggMult) {
+  if (aggMult <= 1) {
+    return {
+      bids: rawBids.slice(0, _BA_MAX_LEVELS),
+      asks: rawAsks.slice(0, _BA_MAX_LEVELS),
+    }
+  }
+  const agg = levels => {
+    const out = []
+    for (let i = 0; i < levels.length && out.length < _BA_MAX_LEVELS; ) {
+      let sumQty = 0, count = 0
+      const basePrice = levels[i].price
+      while (i < levels.length && count < aggMult) { sumQty += levels[i].qty; i++; count++ }
+      out.push({ price: basePrice, qty: sumQty })
+    }
+    return out
+  }
+  return { bids: agg(rawBids), asks: agg(rawAsks) }
+}
+
+function _buildBaDomContent(chartId) {
+  const panel = _baTagEls[chartId]?.domPanel
+  if (!panel) return
+  const tier = _baDomTier[chartId]
+  if (!tier?.levels) return
+
+  const { bids, asks, rowH, aggStep, levels } = tier
+  const maxQty  = Math.max(...bids.map(l => l.qty), ...asks.map(l => l.qty), 1)
+  const optType = chartId === 'ce' ? 'CE' : 'PE'
+  const pinned  = _baDomPinned
+  const spr     = +(asks[0].price - bids[0].price).toFixed(2)
+  const isWide  = spr > aggStep * 5
+
+  const mkRow = (bid, ask) => {
+    const bidPct = bid ? (bid.qty / maxQty * 100).toFixed(1) : 0
+    const askPct = ask ? (ask.qty / maxQty * 100).toFixed(1) : 0
+    const bidBar = `background:linear-gradient(to right,rgba(34,197,94,0.11) ${bidPct}%,transparent ${bidPct}%)`
+    const askBar = `background:linear-gradient(to left,rgba(239,68,68,0.11) ${askPct}%,transparent ${askPct}%)`
+    return `<div class="ba-dom-row2" style="height:${Math.round(rowH)}px">
+      <div class="ba-dom-bid-cell" style="${bidBar}" data-price="${bid?.price ?? ''}">
+        <span class="ba-dom2-qty ba-dom2-bid-qty">${bid ? _fmtQtyCompact(bid.qty) : ''}</span>
+      </div>
+      <div class="ba-dom-ask-cell" style="${askBar}" data-price="${ask?.price ?? ''}">
+        <span class="ba-dom2-qty ba-dom2-ask-qty">${ask ? _fmtQtyCompact(ask.qty) : ''}</span>
+      </div>
+    </div>`
+  }
+
+  const stepLabel = aggStep > _BA_BASE_TICK ? `±${aggStep}` : ''
+
+  panel.innerHTML = `
+    <div class="ba-dom-rail-hdr${pinned ? ' pinned' : ''}">
+      <span class="ba-dom-rail-name">${optType}</span>
+      <span class="ba-dom-spr-lbl${isWide ? ' wide' : ''}">₹${spr.toFixed(2)}</span>
+    </div>
+    <div class="ba-dom-col-hdr">
+      <span class="ba-dom-col-bid-lbl">B</span>
+      ${stepLabel ? `<span class="ba-dom-col-step">${stepLabel}</span>` : ''}
+      <span class="ba-dom-col-ask-lbl">A</span>
+    </div>
+    ${Array.from({ length: levels }, (_, i) => mkRow(bids[i], asks[i])).join('')}
+  `
+}
+
+function _updateBaOverlays() {
+  if (!_baOverlayOn) return
+  ;['ce', 'pe'].forEach(chartId => {
+    const tags = _baTagEls[chartId]
+    if (!tags) return
+    if (!_visibleCharts[chartId]) {
+      tags.pair.style.display   = 'none'
+      tags.spread.style.display = 'none'
+      return
+    }
+    const book = _depthBooks[chartId]
+    if (!book?.bids?.length || !book?.asks?.length) return
+
+    const chartEl = document.getElementById(`${chartId}-chart`)
+    if (!chartEl) return
+    const rect = chartEl.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+
+    const bidPrice = book.bids[0].price
+    const askPrice = book.asks[0].price
+    const bidQty   = book.bids[0].qty
+    const askQty   = book.asks[0].qty
+
+    // Anchor the pair at the mid price so bid+ask always appear as a compact
+    // stacked unit at the actual current price level — spread is tiny vs chart range
+    const midPrice = (bidPrice + askPrice) / 2
+    let midY = getPriceY(chartId, midPrice)
+    if (midY == null) return
+
+    const pairH      = 40   // 2 rows × 20px
+    const tagLeft    = rect.right - _BA_SCALE_W
+    const showDetail = _baMode === 'always' || (_baMode === 'hover' && _baHovering[chartId])
+    const spr        = +(askPrice - bidPrice).toFixed(2)
+
+    // Clamp so pair stays fully within chart bounds
+    const pairTop = Math.max(2, Math.min(rect.height - pairH - 2, midY - pairH / 2))
+
+    const pair = tags.pair
+    pair.style.display = 'none'
+    pair.style.left    = `${tagLeft}px`
+    pair.style.top     = `${rect.top + pairTop}px`
+    pair.title         = `Ask ${askPrice.toFixed(2)} × ${_fmtQty(askQty)} | Bid ${bidPrice.toFixed(2)} × ${_fmtQty(bidQty)}`
+
+    const askRow = pair.querySelector('.ba-pair-ask')
+    const bidRow = pair.querySelector('.ba-pair-bid')
+    askRow.querySelector('.ba-pair-price').textContent = askPrice.toFixed(2)
+    bidRow.querySelector('.ba-pair-price').textContent = bidPrice.toFixed(2)
+    const askQtyEl = askRow.querySelector('.ba-pair-qty')
+    const bidQtyEl = bidRow.querySelector('.ba-pair-qty')
+    askQtyEl.textContent   = `× ${_fmtQtyCompact(askQty)}`
+    bidQtyEl.textContent   = `× ${_fmtQtyCompact(bidQty)}`
+    askQtyEl.style.display = showDetail ? '' : 'none'
+    bidQtyEl.style.display = showDetail ? '' : 'none'
+
+    // Spread chip — sits below the pair in detailed mode
+    if (showDetail) {
+      tags.spread.style.display = 'block'
+      tags.spread.style.left    = `${tagLeft}px`
+      tags.spread.style.top     = `${rect.top + pairTop + pairH + 3}px`
+      tags.spread.textContent   = `Spr ₹${spr.toFixed(2)}`
+    } else {
+      tags.spread.style.display = 'none'
+    }
+
+    // DOM ladder: right edge flush with left edge of price scale — scale stays fully visible
+    const dp = tags.domPanel
+    dp.style.left = `${rect.right - _BA_SCALE_W - _BA_DOM_W}px`
+
+    // ── Adaptive tier: pick aggregation multiplier based on current zoom ──
+    const y0 = getPriceY(chartId, midPrice)
+    const y1 = getPriceY(chartId, midPrice + _BA_BASE_TICK)
+    const pixPerBase = (y0 != null && y1 != null) ? Math.abs(y1 - y0) : 0
+
+    let aggMult = _BA_AGG_MULTS[_BA_AGG_MULTS.length - 1]
+    for (const m of _BA_AGG_MULTS) {
+      if (pixPerBase * m >= _BA_MIN_ROW_H) { aggMult = m; break }
+    }
+
+    const rowH  = Math.min(pixPerBase * aggMult, _BA_MAX_ROW_H) || 16
+    const { bids: aggBids, asks: aggAsks } = _aggregateBook(book.bids, book.asks, aggMult)
+    const levels = Math.min(aggBids.length, aggAsks.length, _BA_MAX_LEVELS)
+
+    // Cache for _buildBaDomContent
+    _baDomTier[chartId] = {
+      rowH, aggStep: +(_BA_BASE_TICK * aggMult).toFixed(2), aggMult,
+      bids: aggBids, asks: aggAsks, levels,
+    }
+
+    // Panel height: header + rows; middle row anchored at current price Y
+    const hdrH   = 36
+    const panelH = hdrH + levels * rowH
+    const midRowCenter = hdrH + Math.floor(levels / 2) * rowH + rowH / 2
+    let   top    = midY - midRowCenter
+    top          = Math.max(0, Math.min(rect.height - panelH, top))
+    dp.style.top    = `${rect.top + top}px`
+    dp.style.height = `${panelH}px`
+
+    // Refresh DOM content live while panel is open
+    if (!dp.classList.contains('hidden')) _buildBaDomContent(chartId)
+  })
+}
+
+function _wireBaSettings() {
+  const settingsBtn = $('#ba-settings-btn')
+  const panel       = $('#ba-settings-panel')
+  if (!settingsBtn || !panel) return
+
+  // Restore saved mode into radio buttons
+  const saved = panel.querySelector(`input[name="ba-mode"][value="${_baMode}"]`)
+  if (saved) saved.checked = true
+
+  settingsBtn.addEventListener('click', e => {
+    e.stopPropagation()
+    const rect = settingsBtn.getBoundingClientRect()
+    panel.style.top   = `${rect.bottom + 6}px`
+    panel.style.right = `${window.innerWidth - rect.right}px`
+    panel.style.left  = 'auto'
+    panel.classList.toggle('hidden')
+  })
+
+  panel.addEventListener('change', e => {
+    const radio = e.target.closest('input[name="ba-mode"]')
+    if (!radio) return
+    _baMode = radio.value
+    localStorage.setItem('scalper_ba_mode', _baMode)
+    _updateBaOverlays()
+  })
+
+  document.addEventListener('click', e => {
+    if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== settingsBtn)
+      panel.classList.add('hidden')
+  })
+
+  // Hover detection per chart — triggers "Detailed on hover" mode
+  ;['ce', 'pe'].forEach(chartId => {
+    const wrapper = $(`#${chartId}-chart-wrapper`)
+    if (!wrapper) return
+    wrapper.addEventListener('mouseenter', () => {
+      clearTimeout(_baHoverTimers[chartId])
+      _baHovering[chartId] = true
+      _updateBaOverlays()
+    })
+    wrapper.addEventListener('mouseleave', () => {
+      clearTimeout(_baHoverTimers[chartId])
+      _baHoverTimers[chartId] = setTimeout(() => {
+        _baHovering[chartId] = false
+        _updateBaOverlays()
+      }, 2000)
+    })
   })
 }
 
@@ -2799,7 +3200,7 @@ function wireCrosshairButtons() {
 }
 
 function buildTradingViewPlusMenuHTML(chartId, price) {
-  const instrId  = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+  const instrId  = chartId === 'ce' ? 'NIFTY_CE' : chartId === 'pe' ? 'NIFTY_PE' : 'NIFTY'
   const inst     = INSTRUMENTS[instrId]
   const name     = inst?.name || instrId
   const qty      = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
@@ -2848,7 +3249,7 @@ function buildTradingViewPlusMenuHTML(chartId, price) {
 }
 
 function buildChartPopupHTML(chartId, price) {
-  const instrId  = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+  const instrId  = chartId === 'ce' ? 'NIFTY_CE' : chartId === 'pe' ? 'NIFTY_PE' : 'NIFTY'
   const inst     = INSTRUMENTS[instrId]
   const name     = inst?.name || instrId
   const qty      = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
@@ -2876,7 +3277,7 @@ function wireChartPopup(popup, chartId, price) {
     const row = e.target.closest('[data-action]')
     if (!row) return
     const action  = row.dataset.action
-    const instrId = chartId === 'ce' ? 'NIFTY_27500CE' : chartId === 'pe' ? 'NIFTY_27500PE' : 'NIFTY'
+    const instrId = chartId === 'ce' ? 'NIFTY_CE' : chartId === 'pe' ? 'NIFTY_PE' : 'NIFTY'
     const qty     = chartId === 'ce' ? ceQty : chartId === 'pe' ? peQty : NIFTY_LOT
     if ((action === 'buy-limit') && chartId !== 'underlying') {
       placeChartLimitOrder('BUY', chartId, instrId, qty, price)
@@ -3011,8 +3412,8 @@ function reconcileOrderHandles() {
 
 // ── On-chart position P&L overlays ───────────────────────────
 function _instrToChart(instrId) {
-  if (instrId === 'NIFTY_27500CE') return 'ce'
-  if (instrId === 'NIFTY_27500PE') return 'pe'
+  if (instrId === 'NIFTY_CE') return 'ce'
+  if (instrId === 'NIFTY_PE') return 'pe'
   return 'underlying'
 }
 
@@ -3268,7 +3669,7 @@ function _initCovHeroData() {
   if (_covHeroData) return
   const spot   = priceEngine.getPrice('NIFTY') || currentPrices.NIFTY
   const chain  = buildOptionChain(spot)
-  const bars   = generateHistory(spot, 0.0008, 60, 555)
+  const bars   = generateHistory(spot, 0.00005, 60, 555)
   const atmIdx = chain.findIndex(r => r.atm)
   const center = atmIdx >= 0 ? atmIdx : Math.floor(chain.length / 2)
   const strikes = chain.slice(Math.max(0, center - 4), center + 5)
