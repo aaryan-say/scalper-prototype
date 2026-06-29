@@ -34,7 +34,6 @@ const LS_KEY = 'tradingDefaults'
 const DEFAULT_TD = {
   product: 'delivery',
   sizeMode: 'indices',
-  preset: 'NIFTY',
   qty: { NIFTY: 150, BANKNIFTY: 70, FINNIFTY: 80, MIDCPNIFTY: 150, SENSEX: 40 },
   lotSize: { NIFTY: 75, BANKNIFTY: 35, FINNIFTY: 40, MIDCPNIFTY: 75, SENSEX: 20 },
   lots: { NIFTY: 2, BANKNIFTY: 2, FINNIFTY: 2, MIDCPNIFTY: 2, SENSEX: 2 },

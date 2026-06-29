@@ -1453,7 +1453,6 @@ function loadTradingDefaultsIntoModal() {
   if ($('#td-disable-on-loss')) $('#td-disable-on-loss').checked = adv.disableOnLoss !== false
   if ($('#td-max-trades')) $('#td-max-trades').value = adv.maxTrades ?? 20
   if ($('#td-stop-after-limit')) $('#td-stop-after-limit').checked = adv.stopAfterLimit !== false
-  setChip('preset', td.preset || 'NIFTY')
   updateRiskMethodLabels()
 }
 
@@ -1461,7 +1460,6 @@ function applyTradingDefaultsFromModal() {
   const td = { ...store.tradingDefaults }
   td.product = getTdSegment('deliveryType', 'delivery')
   td.sizeMode = getTdSegment('sizeMode', 'indices')
-  td.preset = $('[data-td-chips="preset"] button.active')?.dataset.value || 'Custom'
   td.qty   = {}
   td.lots  = {}
   td.lotSize = { ...(td.lotSize || {}) }
