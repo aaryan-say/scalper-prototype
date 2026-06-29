@@ -789,7 +789,85 @@
 
 
 <!-- ════════════════════ TRADING DEFAULTS MODAL ════════════════════ -->
+<!-- Scalper default settings modal -->
 <div id="trading-defaults-modal" class="modal-overlay hidden">
+  <div class="modal scalper-modal" role="dialog" aria-modal="true" aria-labelledby="td-title">
+    <div class="modal-header scalper-modal-header">
+      <div>
+        <div class="modal-title scalper-title" id="td-title">Scalper Default Settings</div>
+        <div class="scalper-subtitle">Configure the default values used for every one-click trade.</div>
+      </div>
+      <div class="modal-header-right">
+        <span class="td-save-status" id="td-save-status">Auto Saved</span>
+        <button class="modal-close" id="td-close" aria-label="Close">x</button>
+      </div>
+    </div>
+    <div class="scalper-body">
+      <section class="td-section">
+        <div class="td-section-title">Order Preferences</div>
+        <div class="td-pref-grid">
+          <div class="td-field"><div class="td-field-label">Delivery Type</div><div class="td-segment" data-td-segment="deliveryType"><button class="td-segment-btn active" type="button" data-value="delivery">Delivery</button><button class="td-segment-btn" type="button" data-value="intraday">Intraday</button></div></div>
+          <div class="td-field"><div class="td-field-label">Price Type</div><div class="td-segment" data-td-segment="priceType"><button class="td-segment-btn active" type="button" data-value="market">Market</button><button class="td-segment-btn" type="button" data-value="limit">Limit</button></div></div>
+        </div>
+      </section>
+      <div class="modal-tabs scalper-tabs"><button class="modal-tab active" type="button" data-td-tab="quantity">Order Size</button><button class="modal-tab" type="button" data-td-tab="risk">Risk Management</button></div>
+      <div class="modal-body scalper-tab-body">
+        <div class="tab-panel active" id="td-tab-quantity">
+          <div class="td-segment full" data-td-segment="sizeMode"><button class="td-segment-btn active" type="button" data-value="indices">Indices</button><button class="td-segment-btn" type="button" data-value="stocks">Stocks &amp; F&amp;O</button></div>
+          <div class="td-size-pane" id="td-size-indices">
+            <div class="td-list">
+              <div class="td-instrument-row" data-inst="NIFTY" data-lot-size="75"><div><div class="td-inst-name">NIFTY</div><div class="td-inst-meta">Lot Size: 75</div></div><div class="td-stepper" data-td-stepper="indexLots" data-inst="NIFTY"><button type="button" data-step="-1">-</button><span id="qty-NIFTY">2</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row" data-inst="BANKNIFTY" data-lot-size="35"><div><div class="td-inst-name">BANKNIFTY</div><div class="td-inst-meta">Lot Size: 35</div></div><div class="td-stepper" data-td-stepper="indexLots" data-inst="BANKNIFTY"><button type="button" data-step="-1">-</button><span id="qty-BANKNIFTY">2</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row" data-inst="FINNIFTY" data-lot-size="40"><div><div class="td-inst-name">FINNIFTY</div><div class="td-inst-meta">Lot Size: 40</div></div><div class="td-stepper" data-td-stepper="indexLots" data-inst="FINNIFTY"><button type="button" data-step="-1">-</button><span id="qty-FINNIFTY">2</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row" data-inst="MIDCPNIFTY" data-lot-size="75"><div><div class="td-inst-name">MIDCPNIFTY</div><div class="td-inst-meta">Lot Size: 75</div></div><div class="td-stepper" data-td-stepper="indexLots" data-inst="MIDCPNIFTY"><button type="button" data-step="-1">-</button><span id="qty-MIDCPNIFTY">2</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row" data-inst="SENSEX" data-lot-size="20"><div><div class="td-inst-name">SENSEX</div><div class="td-inst-meta">Lot Size: 20</div></div><div class="td-stepper" data-td-stepper="indexLots" data-inst="SENSEX"><button type="button" data-step="-1">-</button><span id="qty-SENSEX">2</span><button type="button" data-step="1">+</button></div></div>
+            </div>
+          </div>
+          <div class="td-size-pane hidden" id="td-size-stocks">
+            <div class="td-list">
+              <div class="td-instrument-row"><div><div class="td-inst-name">Stocks</div><div class="td-inst-meta">Default Quantity</div></div><div class="td-stepper" data-td-stepper="stockQty"><button type="button" data-step="-1">-</button><span id="td-stock-qty">100</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row"><div><div class="td-inst-name">Futures</div><div class="td-inst-meta">Default Lots</div></div><div class="td-stepper" data-td-stepper="futureLots"><button type="button" data-step="-1">-</button><span id="td-future-lots">1</span><button type="button" data-step="1">+</button></div></div>
+              <div class="td-instrument-row"><div><div class="td-inst-name">Options</div><div class="td-inst-meta">Default Lots</div></div><div class="td-stepper" data-td-stepper="optionLots"><button type="button" data-step="-1">-</button><span id="td-option-lots">2</span><button type="button" data-step="1">+</button></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-panel" id="td-tab-risk">
+          <section class="td-risk-card open" data-td-card="sl"><button class="td-card-head" type="button" data-td-accordion="sl"><span>Stop Loss</span><span class="td-card-chevron">⌄</span></button><div class="td-card-body">
+            <div class="td-inline-group"><div class="td-field-label">Execution Type</div><div class="td-segment compact" data-td-segment="slType"><button class="td-segment-btn active" type="button" data-value="market">Market</button><button class="td-segment-btn" type="button" data-value="limit">Limit</button></div></div>
+            <label class="td-input-row"><span>Stop Loss Method</span><select class="select-input" id="sl-method"><option value="percentage">Percentage</option><option value="points">Points</option><option value="price">Price</option><option value="atr">ATR (Future)</option><option value="candleLow">Candle Low (Future)</option></select></label>
+            <label class="td-input-row"><span id="sl-input-label">Stop Loss</span><div class="td-input-unit"><input type="number" id="sl-trigger-pct" min="0.1" step="0.1" value="10"><span id="sl-unit">%</span></div></label>
+            <div class="td-chip-row" data-td-chips="slPreset"><button type="button" data-value="5">5%</button><button class="active" type="button" data-value="10">10%</button><button type="button" data-value="15">15%</button><button type="button" data-value="20">20%</button><button type="button" data-value="custom">Custom</button></div>
+            <div class="td-toggle-row"><div><div class="td-inst-name">Trailing Stop</div></div><button class="td-switch" id="trailing-sl-track" type="button" aria-pressed="false"><span></span></button></div>
+            <div class="td-nested hidden" id="td-trailing-settings"><label class="td-input-row"><span>Move SL after</span><div class="td-input-unit"><input type="number" id="td-trail-after" value="10" min="1"><span>Points</span></div></label><label class="td-input-row"><span>Trail By</span><div class="td-input-unit"><input type="number" id="trailing-val" value="5" min="1"><span>Points</span></div></label></div>
+            <label class="td-check"><input type="checkbox" id="td-auto-sl" checked><span>Automatically place Stop Loss after entry</span></label>
+          </div></section>
+          <section class="td-risk-card open" data-td-card="tp"><button class="td-card-head" type="button" data-td-accordion="tp"><span>Target Profit</span><span class="td-card-chevron">⌄</span></button><div class="td-card-body">
+            <div class="td-inline-group"><div class="td-field-label">Execution Type</div><div class="td-segment compact" data-td-segment="tpType"><button class="td-segment-btn active" type="button" data-value="market">Market</button><button class="td-segment-btn" type="button" data-value="limit">Limit</button></div></div>
+            <label class="td-input-row"><span>Target Method</span><select class="select-input" id="tp-method"><option value="percentage">Percentage</option><option value="points">Points</option><option value="price">Price</option></select></label>
+            <label class="td-input-row"><span id="tp-input-label">Target</span><div class="td-input-unit"><input type="number" id="tp-trigger-pct" min="0.1" step="0.1" value="20"><span id="tp-unit">%</span></div></label>
+            <div class="td-chip-row" data-td-chips="rr"><button type="button" data-value="1">1:1</button><button type="button" data-value="1.5">1:1.5</button><button class="active" type="button" data-value="2">1:2</button><button type="button" data-value="3">1:3</button><button type="button" data-value="custom">Custom</button></div>
+            <label class="td-check"><input type="checkbox" id="td-auto-tp" checked><span>Automatically place Target after entry</span></label>
+          </div></section>
+          <section class="td-risk-card" data-td-card="advanced"><button class="td-card-head" type="button" data-td-accordion="advanced"><span>Advanced Risk Controls</span><span class="td-card-chevron">⌄</span></button><div class="td-card-body">
+            <div class="td-toggle-row"><div><div class="td-inst-name">Break Even</div><div class="td-inst-meta">Move Stop Loss to Entry after 1R</div></div><button class="td-switch" id="td-breakeven" type="button" aria-pressed="false"><span></span></button></div>
+            <div class="td-toggle-row"><div><div class="td-inst-name">Partial Profit Booking</div><div class="td-inst-meta">Book 50% at 1R, exit remaining at 2R</div></div><button class="td-switch" id="td-partial" type="button" aria-pressed="false"><span></span></button></div>
+            <div class="td-radio-group" id="td-risk-sizing"><label><input type="radio" name="td-sizing" value="fixedLots" checked> Fixed Lots</label><label><input type="radio" name="td-sizing" value="fixedQty"> Fixed Quantity</label><label><input type="radio" name="td-sizing" value="fixedRisk"> Fixed Rs Risk</label><label><input type="radio" name="td-sizing" value="capitalPct"> Percentage of Capital</label></div>
+            <label class="td-input-row hidden" id="td-fixed-risk-row"><span>Fixed Risk</span><div class="td-input-unit"><span>Rs</span><input type="number" id="td-fixed-risk" value="500" min="1"></div></label>
+            <label class="td-input-row"><span>Maximum Daily Loss</span><div class="td-input-unit"><span>Rs</span><input type="number" id="td-max-loss" value="5000" min="0"></div></label>
+            <label class="td-check"><input type="checkbox" id="td-disable-on-loss" checked><span>Disable One Click Trading when exceeded</span></label>
+            <label class="td-input-row"><span>Maximum Trades</span><div class="td-input-unit"><input type="number" id="td-max-trades" value="20" min="1"></div></label>
+            <label class="td-check"><input type="checkbox" id="td-stop-after-limit" checked><span>Stop taking new trades after limit</span></label>
+            <div class="td-toggle-row"><div><div class="td-inst-name">Require Order Confirmation</div><div class="td-inst-meta">Default OFF</div></div><button class="td-switch" id="td-require-confirm" type="button" aria-pressed="false"><span></span></button></div>
+          </div></section>
+        </div>
+      </div>
+      <div class="td-presets" data-td-chips="preset"><button class="active" type="button" data-value="NIFTY">NIFTY</button><button type="button" data-value="BANKNIFTY">BANKNIFTY</button><button type="button" data-value="Expiry">Expiry</button><button type="button" data-value="Swing">Swing</button><button type="button" data-value="Custom">Custom</button></div>
+    </div>
+    <div class="modal-footer scalper-footer"><button class="modal-cancel td-reset-btn" id="td-reset">Reset to Default</button><button class="modal-cancel" id="td-cancel">Cancel</button><button class="modal-apply" id="td-apply">Save Defaults</button></div>
+  </div>
+</div>
+
+<div id="trading-defaults-modal-legacy" class="modal-overlay hidden">
   <div class="modal">
     <div class="modal-header">
       <span class="modal-title">Trading Defaults</span>

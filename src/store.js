@@ -32,8 +32,13 @@ export const state = {
 // ── Trading defaults (localStorage-backed) ─────────────────
 const LS_KEY = 'tradingDefaults'
 const DEFAULT_TD = {
-  qty: { NIFTY: 235, BANKNIFTY: 235, FINNIFTY: 235, SENSEX: 235 },
-  lotSize: { NIFTY: 50, BANKNIFTY: 15, FINNIFTY: 25, SENSEX: 10 },
+  product: 'delivery',
+  sizeMode: 'indices',
+  preset: 'NIFTY',
+  qty: { NIFTY: 150, BANKNIFTY: 70, FINNIFTY: 80, MIDCPNIFTY: 150, SENSEX: 40 },
+  lotSize: { NIFTY: 75, BANKNIFTY: 35, FINNIFTY: 40, MIDCPNIFTY: 75, SENSEX: 20 },
+  lots: { NIFTY: 2, BANKNIFTY: 2, FINNIFTY: 2, MIDCPNIFTY: 2, SENSEX: 2 },
+  stocksFo: { stocksQty: 100, futuresLots: 1, optionsLots: 2 },
   price: {
     stocks:  { type: 'market', limitPct: 1.25 },
     options: { type: 'market', limitPct: 1.25 },
@@ -41,13 +46,30 @@ const DEFAULT_TD = {
   },
   sl: {
     type:       'market',
-    triggerPct: 25,
+    method:     'percentage',
+    triggerPct: 10,
     trailing:   false,
-    trailingPt: 1,
+    trailingPt: 5,
+    moveAfterPt: 10,
+    autoPlace: true,
   },
   tp: {
     type:       'market',
-    triggerPct: 25,
+    method:     'percentage',
+    triggerPct: 20,
+    rrRatio:    2,
+    autoPlace: true,
+  },
+  advancedRisk: {
+    breakEven: false,
+    partialProfit: false,
+    sizing: 'fixedLots',
+    fixedRisk: 500,
+    maxDailyLoss: 5000,
+    disableOnLoss: true,
+    maxTrades: 20,
+    stopAfterLimit: true,
+    requireConfirmation: false,
   },
 }
 
@@ -61,6 +83,9 @@ function loadTD() {
       ...DEFAULT_TD,
       ...saved,
       qty:   { ...DEFAULT_TD.qty,   ...(saved.qty   || {}) },
+      lotSize: { ...DEFAULT_TD.lotSize, ...(saved.lotSize || {}) },
+      lots: { ...DEFAULT_TD.lots, ...(saved.lots || {}) },
+      stocksFo: { ...DEFAULT_TD.stocksFo, ...(saved.stocksFo || {}) },
       price: {
         stocks:  { ...DEFAULT_TD.price.stocks,  ...(saved.price?.stocks  || {}) },
         options: { ...DEFAULT_TD.price.options, ...(saved.price?.options || {}) },
@@ -68,6 +93,7 @@ function loadTD() {
       },
       sl: { ...DEFAULT_TD.sl, ...(saved.sl || {}) },
       tp: { ...DEFAULT_TD.tp, ...(saved.tp || {}) },
+      advancedRisk: { ...DEFAULT_TD.advancedRisk, ...(saved.advancedRisk || {}) },
     }
   } catch { return { ...DEFAULT_TD } }
 }
@@ -77,8 +103,8 @@ function saveTD(td) {
 
 function migrateLoadedTD(td) {
   // If saved triggerPct is dangerously small for options, reset to safe default
-  if ((td.sl?.triggerPct ?? 0) < 5) td.sl = { ...td.sl, triggerPct: DEFAULT_TD.sl.triggerPct }
-  if ((td.tp?.triggerPct ?? 0) < 5) td.tp = { ...td.tp, triggerPct: DEFAULT_TD.tp.triggerPct }
+  if ((td.sl?.triggerPct ?? 0) < 0.1) td.sl = { ...td.sl, triggerPct: DEFAULT_TD.sl.triggerPct }
+  if ((td.tp?.triggerPct ?? 0) < 0.1) td.tp = { ...td.tp, triggerPct: DEFAULT_TD.tp.triggerPct }
   return td
 }
 export let tradingDefaults = migrateLoadedTD(loadTD())

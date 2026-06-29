@@ -1132,11 +1132,13 @@ function handleOrder(side, chart, instrumentId) {
           const slPct  = _octSettings.slPct / 100
           const tpPct  = slPct * _octSettings.rrRatio
           const dir    = side === 'BUY' ? 1 : -1
-          activateRiskHandles(
-            pos.id, chart,
-            roundToTick(avg * (1 - dir * slPct)),
-            roundToTick(avg * (1 + dir * tpPct))
-          )
+          const slPrice = roundToTick(avg * (1 - dir * slPct))
+          const tpPrice = roundToTick(avg * (1 + dir * tpPct))
+          if (store.tradingDefaults.sl?.autoPlace !== false || store.tradingDefaults.tp?.autoPlace !== false) {
+            activateRiskHandles(pos.id, chart, slPrice, tpPrice)
+            if (store.tradingDefaults.sl?.autoPlace === false) removeOrderLine(`risk-${pos.id}-sl`)
+            if (store.tradingDefaults.tp?.autoPlace === false) removeOrderLine(`risk-${pos.id}-tp`)
+          }
         }
       }
     }
@@ -1192,7 +1194,7 @@ function _wireOctPanel() {
   const riskBody  = $('#oct-risk-body')
   const slInput   = $('#oct-sl-pct')
   const tpVal     = $('#oct-tp-pct-val')
-  if (!panel || !menuBtn) return
+  if (!menuBtn) return
 
   const updateTp = () => {
     const tp = (_octSettings.slPct * _octSettings.rrRatio).toFixed(1)
@@ -1201,6 +1203,8 @@ function _wireOctPanel() {
 
   menuBtn.addEventListener('click', e => {
     e.stopPropagation()
+    openTradingDefaults()
+    return
     const rect = menuBtn.getBoundingClientRect()
     panel.style.top  = (rect.bottom + 6) + 'px'
     panel.style.right = (window.innerWidth - rect.right) + 'px'
@@ -1241,123 +1245,276 @@ function _wireOctPanel() {
 }
 
 // ── Trading Defaults Modal ────────────────────────────────────
+function syncOneClickSettingsFromDefaults() {
+  const td = store.tradingDefaults
+  _octSettings.autoRisk = td.sl?.autoPlace !== false || td.tp?.autoPlace !== false
+  _octSettings.slPct = parseFloat(td.sl?.triggerPct) || 10
+  _octSettings.rrRatio = parseFloat(td.tp?.rrRatio) || 2
+  if (td.qty?.NIFTY) {
+    ceQty = td.qty.NIFTY
+    peQty = td.qty.NIFTY
+    updateQtyDisplay('ce')
+    updateQtyDisplay('pe')
+  }
+}
+
 function wireTradingDefaultsModal() {
-  $$('[data-td-tab]').forEach(btn => {
+  const modal = $('#trading-defaults-modal')
+
+  $$('[data-td-tab]', modal).forEach(btn => {
+    btn.addEventListener('click', () => setTdTab(btn.dataset.tdTab))
+  })
+
+  $$('[data-td-segment]', modal).forEach(group => {
+    group.addEventListener('click', e => {
+      const btn = e.target.closest('.td-segment-btn')
+      if (!btn) return
+      setTdSegment(group.dataset.tdSegment, btn.dataset.value)
+      if (group.dataset.tdSegment === 'sizeMode') {
+        $('#td-size-indices')?.classList.toggle('hidden', btn.dataset.value !== 'indices')
+        $('#td-size-stocks')?.classList.toggle('hidden', btn.dataset.value !== 'stocks')
+      }
+    })
+  })
+
+  $$('.td-stepper', modal).forEach(stepper => {
+    stepper.addEventListener('click', e => {
+      const btn = e.target.closest('[data-step]')
+      if (!btn) return
+      const valueEl = stepper.querySelector('span')
+      const step = Number(btn.dataset.step) || 0
+      const mode = stepper.dataset.tdStepper
+      const min = mode === 'stockQty' ? 1 : 1
+      const jump = mode === 'stockQty' ? 25 : 1
+      valueEl.textContent = String(Math.max(min, (parseInt(valueEl.textContent) || min) + step * jump))
+    })
+  })
+
+  $$('[data-td-accordion]', modal).forEach(btn => {
+    btn.addEventListener('click', () => btn.closest('.td-risk-card')?.classList.toggle('open'))
+  })
+
+  $$('.td-switch', modal).forEach(btn => {
     btn.addEventListener('click', () => {
-      $$('[data-td-tab]').forEach(b => b.classList.remove('active'))
-      $$('.tab-panel').forEach(p => p.classList.remove('active'))
-      btn.classList.add('active')
-      $(`#td-tab-${btn.dataset.tdTab}`).classList.add('active')
+      const on = !btn.classList.contains('on')
+      btn.classList.toggle('on', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+      if (btn.id === 'trailing-sl-track') $('#td-trailing-settings')?.classList.toggle('hidden', !on)
     })
   })
 
-  $$('.modal-stepper .stepper-btn[data-inst]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const inst   = btn.dataset.inst
-      const action = btn.dataset.action
-      const valEl  = $(`#qty-${inst}`)
-      if (!valEl) return
-      let v = parseInt(valEl.textContent) || 0
-      v = action === 'inc' ? v + 25 : Math.max(25, v - 25)
-      valEl.textContent = v
-      updateLotsDisplay(inst, v)
+  $$('[data-td-chips]', modal).forEach(group => {
+    group.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-value]')
+      if (!btn) return
+      $$('button', group).forEach(item => item.classList.toggle('active', item === btn))
+      if (group.dataset.tdChips === 'slPreset' && btn.dataset.value !== 'custom') {
+        $('#sl-trigger-pct').value = btn.dataset.value
+        syncTargetFromRiskReward()
+      }
+      if (group.dataset.tdChips === 'rr' && btn.dataset.value !== 'custom') syncTargetFromRiskReward(Number(btn.dataset.value))
     })
   })
 
-  ;[['price-type-stocks', 'stocks-limit-row'],
-    ['price-type-options','options-limit-row'],
-    ['price-type-futures','futures-limit-row']].forEach(([selId, rowId]) => {
-    const sel = $(`#${selId}`)
-    const row = $(`#${rowId}`)
-    if (!sel || !row) return
-    sel.addEventListener('change', () => {
-      row.style.display = sel.value === 'limit' ? 'flex' : 'none'
-    })
+  $('#sl-method')?.addEventListener('change', updateRiskMethodLabels)
+  $('#tp-method')?.addEventListener('change', updateRiskMethodLabels)
+  $('#sl-trigger-pct')?.addEventListener('input', () => {
+    markChipCustom('slPreset')
+    syncTargetFromRiskReward()
   })
+  $('#tp-trigger-pct')?.addEventListener('input', () => markChipCustom('rr'))
 
-  const trailTrack = $('#trailing-sl-track')
-  let trailOn = false
-  if (trailTrack) trailTrack.addEventListener('click', () => {
-    trailOn = !trailOn
-    trailTrack.classList.toggle('on', trailOn)
+  $('#td-risk-sizing')?.addEventListener('change', () => {
+    const selected = $('input[name="td-sizing"]:checked')?.value
+    $('#td-fixed-risk-row')?.classList.toggle('hidden', selected !== 'fixedRisk')
   })
-
-  let trailVal = 1
-  $('#trailing-inc')?.addEventListener('click', () => { trailVal++; $('#trailing-val').textContent = trailVal })
-  $('#trailing-dec')?.addEventListener('click', () => { trailVal = Math.max(1, trailVal - 1); $('#trailing-val').textContent = trailVal })
 
   $('#td-apply')?.addEventListener('click',  () => { applyTradingDefaultsFromModal(); closeTradingDefaults() })
   $('#td-cancel')?.addEventListener('click', closeTradingDefaults)
   $('#td-close')?.addEventListener('click',  closeTradingDefaults)
-  $('#td-reset')?.addEventListener('click',  () => { store.resetTradingDefaults(); loadTradingDefaultsIntoModal() })
+  $('#td-reset')?.addEventListener('click',  () => { store.resetTradingDefaults(); loadTradingDefaultsIntoModal(); syncOneClickSettingsFromDefaults() })
 
-  $('#trading-defaults-modal')?.addEventListener('click', e => {
-    if (e.target === $('#trading-defaults-modal')) closeTradingDefaults()
+  modal?.addEventListener('click', e => {
+    if (e.target === modal) closeTradingDefaults()
   })
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !modal?.classList.contains('hidden')) closeTradingDefaults()
+  })
+
+  syncOneClickSettingsFromDefaults()
 }
 
-function updateLotsDisplay(inst, qty) {
-  const lotSizes = { NIFTY: 50, BANKNIFTY: 15, FINNIFTY: 25, SENSEX: 10 }
-  const ls   = lotSizes[inst] || 1
-  const lots = Math.round(qty / ls)
-  const el   = $(`#lots-${inst}`)
-  if (el) el.textContent = `${lots} lot${lots !== 1 ? 's' : ''}`
+function setTdTab(tab) {
+  $$('[data-td-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.tdTab === tab))
+  $$('.scalper-tab-body .tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === `td-tab-${tab}`))
 }
 
 function openTradingDefaults() { loadTradingDefaultsIntoModal(); $('#trading-defaults-modal').classList.remove('hidden') }
 function closeTradingDefaults() { $('#trading-defaults-modal').classList.add('hidden') }
 
+function setTdSegment(name, value) {
+  const group = $(`[data-td-segment="${name}"]`)
+  if (!group) return
+  $$('.td-segment-btn', group).forEach(btn => btn.classList.toggle('active', btn.dataset.value === value))
+}
+
+function getTdSegment(name, fallback) {
+  return $(`[data-td-segment="${name}"] .td-segment-btn.active`)?.dataset.value || fallback
+}
+
+function setTdSwitch(id, on) {
+  const btn = $(`#${id}`)
+  if (!btn) return
+  btn.classList.toggle('on', !!on)
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+}
+
+function markChipCustom(name) {
+  const group = $(`[data-td-chips="${name}"]`)
+  if (!group) return
+  $$('button', group).forEach(btn => btn.classList.toggle('active', btn.dataset.value === 'custom'))
+}
+
+function setChip(name, value) {
+  const group = $(`[data-td-chips="${name}"]`)
+  if (!group) return
+  const str = String(value)
+  let matched = false
+  $$('button', group).forEach(btn => {
+    const active = btn.dataset.value === str
+    matched ||= active
+    btn.classList.toggle('active', active)
+  })
+  if (!matched) $$('button', group).forEach(btn => btn.classList.toggle('active', btn.dataset.value === 'custom'))
+}
+
+function syncTargetFromRiskReward(rrOverride = null) {
+  const rr = rrOverride ?? Number($('[data-td-chips="rr"] button.active')?.dataset.value)
+  if (!Number.isFinite(rr)) return
+  const sl = parseFloat($('#sl-trigger-pct')?.value) || 0
+  if ($('#sl-method')?.value === 'percentage' && $('#tp-method')?.value === 'percentage') {
+    $('#tp-trigger-pct').value = +(sl * rr).toFixed(1)
+  }
+}
+
+function updateRiskMethodLabels() {
+  const slMethod = $('#sl-method')?.value || 'percentage'
+  const tpMethod = $('#tp-method')?.value || 'percentage'
+  const unitMap = { percentage: '%', points: 'Points', price: 'Price', atr: 'ATR', candleLow: 'Low' }
+  if ($('#sl-unit')) $('#sl-unit').textContent = unitMap[slMethod] || ''
+  if ($('#tp-unit')) $('#tp-unit').textContent = unitMap[tpMethod] || ''
+  if ($('#sl-input-label')) $('#sl-input-label').textContent = slMethod === 'percentage' ? 'Stop Loss' : 'Value'
+  if ($('#tp-input-label')) $('#tp-input-label').textContent = tpMethod === 'percentage' ? 'Target' : 'Value'
+}
+
 function loadTradingDefaultsIntoModal() {
   const td = store.tradingDefaults
-  ;['NIFTY','BANKNIFTY','FINNIFTY','SENSEX'].forEach(inst => {
-    const v  = td.qty?.[inst] ?? 235
+  setTdSegment('deliveryType', td.product || 'delivery')
+  setTdSegment('priceType', td.price?.options?.type || 'market')
+  setTdSegment('sizeMode', td.sizeMode || 'indices')
+  $('#td-size-indices')?.classList.toggle('hidden', td.sizeMode === 'stocks')
+  $('#td-size-stocks')?.classList.toggle('hidden', td.sizeMode !== 'stocks')
+
+  ;['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY','SENSEX'].forEach(inst => {
+    const lots = td.lots?.[inst] ?? Math.max(1, Math.round((td.qty?.[inst] || 1) / (td.lotSize?.[inst] || 1)))
     const el = $(`#qty-${inst}`)
-    if (el) el.textContent = v
-    updateLotsDisplay(inst, v)
+    if (el) el.textContent = lots
   })
-  ;[['price-type-stocks', td.price?.stocks?.type ?? 'market', 'stocks-limit-row', 'price-limit-stocks', td.price?.stocks?.limitPct ?? 1.25],
-    ['price-type-options',td.price?.options?.type ?? 'market','options-limit-row','price-limit-options',td.price?.options?.limitPct ?? 1.25],
-    ['price-type-futures',td.price?.futures?.type ?? 'market','futures-limit-row','price-limit-futures',td.price?.futures?.limitPct ?? 1.25]
-  ].forEach(([selId, val, rowId, inputId, pct]) => {
-    const sel   = $(`#${selId}`)
-    const row   = $(`#${rowId}`)
-    const input = $(`#${inputId}`)
-    if (sel)   sel.value   = val
-    if (row)   row.style.display = val === 'limit' ? 'flex' : 'none'
-    if (input) input.value = pct
-  })
-  const trailEl = $('#trailing-sl-track')
-  if (trailEl) trailEl.classList.toggle('on', !!td.sl?.trailing)
-  const tvEl = $('#trailing-val')
-  if (tvEl) tvEl.textContent = td.sl?.trailingPt ?? 1
-  const slPct = $('#sl-trigger-pct')
-  if (slPct) slPct.value = td.sl?.triggerPct ?? 25
-  const tpPct = $('#tp-trigger-pct')
-  if (tpPct) tpPct.value = td.tp?.triggerPct ?? 25
+  if ($('#td-stock-qty')) $('#td-stock-qty').textContent = td.stocksFo?.stocksQty ?? 100
+  if ($('#td-future-lots')) $('#td-future-lots').textContent = td.stocksFo?.futuresLots ?? 1
+  if ($('#td-option-lots')) $('#td-option-lots').textContent = td.stocksFo?.optionsLots ?? 2
+
+  setTdSegment('slType', td.sl?.type || 'market')
+  setTdSegment('tpType', td.tp?.type || 'market')
+  if ($('#sl-method')) $('#sl-method').value = td.sl?.method || 'percentage'
+  if ($('#tp-method')) $('#tp-method').value = td.tp?.method || 'percentage'
+  if ($('#sl-trigger-pct')) $('#sl-trigger-pct').value = td.sl?.triggerPct ?? 10
+  if ($('#tp-trigger-pct')) $('#tp-trigger-pct').value = td.tp?.triggerPct ?? 20
+  if ($('#td-trail-after')) $('#td-trail-after').value = td.sl?.moveAfterPt ?? 10
+  if ($('#trailing-val')) $('#trailing-val').value = td.sl?.trailingPt ?? 5
+  setTdSwitch('trailing-sl-track', !!td.sl?.trailing)
+  $('#td-trailing-settings')?.classList.toggle('hidden', !td.sl?.trailing)
+  if ($('#td-auto-sl')) $('#td-auto-sl').checked = td.sl?.autoPlace !== false
+  if ($('#td-auto-tp')) $('#td-auto-tp').checked = td.tp?.autoPlace !== false
+  setChip('slPreset', td.sl?.triggerPct ?? 10)
+  setChip('rr', td.tp?.rrRatio ?? 2)
+
+  const adv = td.advancedRisk || {}
+  setTdSwitch('td-breakeven', !!adv.breakEven)
+  setTdSwitch('td-partial', !!adv.partialProfit)
+  setTdSwitch('td-require-confirm', !!adv.requireConfirmation)
+  const sizing = adv.sizing || 'fixedLots'
+  const sizingEl = $(`input[name="td-sizing"][value="${sizing}"]`)
+  if (sizingEl) sizingEl.checked = true
+  $('#td-fixed-risk-row')?.classList.toggle('hidden', sizing !== 'fixedRisk')
+  if ($('#td-fixed-risk')) $('#td-fixed-risk').value = adv.fixedRisk ?? 500
+  if ($('#td-max-loss')) $('#td-max-loss').value = adv.maxDailyLoss ?? 5000
+  if ($('#td-disable-on-loss')) $('#td-disable-on-loss').checked = adv.disableOnLoss !== false
+  if ($('#td-max-trades')) $('#td-max-trades').value = adv.maxTrades ?? 20
+  if ($('#td-stop-after-limit')) $('#td-stop-after-limit').checked = adv.stopAfterLimit !== false
+  setChip('preset', td.preset || 'NIFTY')
+  updateRiskMethodLabels()
 }
 
 function applyTradingDefaultsFromModal() {
   const td = { ...store.tradingDefaults }
+  td.product = getTdSegment('deliveryType', 'delivery')
+  td.sizeMode = getTdSegment('sizeMode', 'indices')
+  td.preset = $('[data-td-chips="preset"] button.active')?.dataset.value || 'Custom'
   td.qty   = {}
-  ;['NIFTY','BANKNIFTY','FINNIFTY','SENSEX'].forEach(inst => {
-    td.qty[inst] = parseInt($(`#qty-${inst}`)?.textContent) || 235
+  td.lots  = {}
+  td.lotSize = { ...(td.lotSize || {}) }
+  ;['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY','SENSEX'].forEach(inst => {
+    const row = $(`.td-instrument-row[data-inst="${inst}"]`)
+    const lotSize = parseInt(row?.dataset.lotSize) || td.lotSize?.[inst] || 1
+    const lots = parseInt($(`#qty-${inst}`)?.textContent) || 1
+    td.lotSize[inst] = lotSize
+    td.lots[inst] = lots
+    td.qty[inst] = lots * lotSize
   })
+  td.stocksFo = {
+    stocksQty: parseInt($('#td-stock-qty')?.textContent) || 100,
+    futuresLots: parseInt($('#td-future-lots')?.textContent) || 1,
+    optionsLots: parseInt($('#td-option-lots')?.textContent) || 2,
+  }
+  const priceType = getTdSegment('priceType', 'market')
   td.price = {
-    stocks:  { type: $('#price-type-stocks')?.value  ?? 'market', limitPct: parseFloat($('#price-limit-stocks')?.value)  || 1.25 },
-    options: { type: $('#price-type-options')?.value ?? 'market', limitPct: parseFloat($('#price-limit-options')?.value) || 1.25 },
-    futures: { type: $('#price-type-futures')?.value ?? 'market', limitPct: parseFloat($('#price-limit-futures')?.value) || 1.25 },
+    stocks:  { ...(td.price?.stocks || {}), type: priceType },
+    options: { ...(td.price?.options || {}), type: priceType },
+    futures: { ...(td.price?.futures || {}), type: priceType },
   }
   td.sl = {
-    type:       $('#sl-price-type')?.value ?? 'market',
-    triggerPct: parseFloat($('#sl-trigger-pct')?.value) || 25,
+    type:       getTdSegment('slType', 'market'),
+    method:     $('#sl-method')?.value || 'percentage',
+    triggerPct: parseFloat($('#sl-trigger-pct')?.value) || 10,
     trailing:   $('#trailing-sl-track')?.classList.contains('on') ?? false,
-    trailingPt: parseInt($('#trailing-val')?.textContent) || 1,
+    trailingPt: parseFloat($('#trailing-val')?.value) || 5,
+    moveAfterPt: parseFloat($('#td-trail-after')?.value) || 10,
+    autoPlace: $('#td-auto-sl')?.checked ?? true,
   }
   td.tp = {
-    type:       $('#tp-price-type')?.value ?? 'market',
-    triggerPct: parseFloat($('#tp-trigger-pct')?.value) || 25,
+    type:       getTdSegment('tpType', 'market'),
+    method:     $('#tp-method')?.value || 'percentage',
+    triggerPct: parseFloat($('#tp-trigger-pct')?.value) || 20,
+    rrRatio: parseFloat($('[data-td-chips="rr"] button.active')?.dataset.value) || 2,
+    autoPlace: $('#td-auto-tp')?.checked ?? true,
+  }
+  td.advancedRisk = {
+    breakEven: $('#td-breakeven')?.classList.contains('on') ?? false,
+    partialProfit: $('#td-partial')?.classList.contains('on') ?? false,
+    sizing: $('input[name="td-sizing"]:checked')?.value || 'fixedLots',
+    fixedRisk: parseFloat($('#td-fixed-risk')?.value) || 500,
+    maxDailyLoss: parseFloat($('#td-max-loss')?.value) || 5000,
+    disableOnLoss: $('#td-disable-on-loss')?.checked ?? true,
+    maxTrades: parseInt($('#td-max-trades')?.value) || 20,
+    stopAfterLimit: $('#td-stop-after-limit')?.checked ?? true,
+    requireConfirmation: $('#td-require-confirm')?.classList.contains('on') ?? false,
   }
   store.applyTradingDefaults(td)
+  syncOneClickSettingsFromDefaults()
+  const status = $('#td-save-status')
+  if (status) status.textContent = 'Saved now'
   // Re-price existing open position SL/TP handles with new percentages
   store.state.positions.forEach(pos => {
     const slId = `risk-${pos.id}-sl`
