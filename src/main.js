@@ -2934,11 +2934,11 @@ function _createBaOverlays() {
     domPanel.addEventListener('mousedown', e => e.stopPropagation())
     domPanel.addEventListener('click', e => {
       e.stopPropagation()
-      const cell = e.target.closest('.ba-dom-bid-cell[data-price], .ba-dom-ask-cell[data-price]')
-      if (cell?.dataset.price) {
+      const row = e.target.closest('.ba-dom-vrow--bid[data-price], .ba-dom-vrow--ask[data-price]')
+      if (row?.dataset.price) {
         const instrId = chartId === 'ce' ? 'NIFTY_CE' : 'NIFTY_PE'
-        const side    = cell.classList.contains('ba-dom-bid-cell') ? 'SELL' : 'BUY'
-        showOrderOverlay(side, chartId, instrId, parseFloat(cell.dataset.price))
+        const side    = row.classList.contains('ba-dom-vrow--bid') ? 'SELL' : 'BUY'
+        showOrderOverlay(side, chartId, instrId, parseFloat(row.dataset.price))
       }
     })
 
@@ -3002,19 +3002,24 @@ function _buildBaDomContent(chartId) {
   const pinned  = _baDomPinned
   const spr     = +(asks[0].price - bids[0].price).toFixed(2)
   const isWide  = spr > aggStep * 5
+  const h       = Math.round(rowH)
 
-  const mkRow = (bid, ask) => {
-    const bidPct = bid ? (bid.qty / maxQty * 100).toFixed(1) : 0
-    const askPct = ask ? (ask.qty / maxQty * 100).toFixed(1) : 0
-    const bidBar = `background:linear-gradient(to right,rgba(34,197,94,0.11) ${bidPct}%,transparent ${bidPct}%)`
-    const askBar = `background:linear-gradient(to left,rgba(239,68,68,0.11) ${askPct}%,transparent ${askPct}%)`
-    return `<div class="ba-dom-row2" style="height:${Math.round(rowH)}px">
-      <div class="ba-dom-bid-cell" style="${bidBar}" data-price="${bid?.price ?? ''}">
-        <span class="ba-dom2-qty ba-dom2-bid-qty">${bid ? _fmtQtyCompact(bid.qty) : ''}</span>
-      </div>
-      <div class="ba-dom-ask-cell" style="${askBar}" data-price="${ask?.price ?? ''}">
-        <span class="ba-dom2-qty ba-dom2-ask-qty">${ask ? _fmtQtyCompact(ask.qty) : ''}</span>
-      </div>
+  // All bars grow left→right so both sides "face" the same direction.
+  // asks[0] = highest ask (top), asks[N-1] = best ask (bottom, closest to spread).
+  // bids[0] = best bid (top, closest to spread), bids[N-1] = lowest bid (bottom).
+  const mkAskRow = ask => {
+    const pct  = ask ? (ask.qty / maxQty * 100).toFixed(1) : 0
+    const grad = `linear-gradient(to right,rgba(239,68,68,0.32) 0%,rgba(239,68,68,0.07) ${pct}%,transparent ${pct}%)`
+    return `<div class="ba-dom-vrow ba-dom-vrow--ask" style="height:${h}px;background:${grad}" data-price="${ask?.price ?? ''}">
+      <span class="ba-dom-vqty">${ask ? _fmtQtyCompact(ask.qty) : ''}</span>
+    </div>`
+  }
+
+  const mkBidRow = bid => {
+    const pct  = bid ? (bid.qty / maxQty * 100).toFixed(1) : 0
+    const grad = `linear-gradient(to right,rgba(34,197,94,0.32) 0%,rgba(34,197,94,0.07) ${pct}%,transparent ${pct}%)`
+    return `<div class="ba-dom-vrow ba-dom-vrow--bid" style="height:${h}px;background:${grad}" data-price="${bid?.price ?? ''}">
+      <span class="ba-dom-vqty">${bid ? _fmtQtyCompact(bid.qty) : ''}</span>
     </div>`
   }
 
@@ -3025,12 +3030,9 @@ function _buildBaDomContent(chartId) {
       <span class="ba-dom-rail-name">${optType}</span>
       <span class="ba-dom-spr-lbl${isWide ? ' wide' : ''}">₹${spr.toFixed(2)}</span>
     </div>
-    <div class="ba-dom-col-hdr">
-      <span class="ba-dom-col-bid-lbl">B</span>
-      ${stepLabel ? `<span class="ba-dom-col-step">${stepLabel}</span>` : ''}
-      <span class="ba-dom-col-ask-lbl">A</span>
-    </div>
-    ${Array.from({ length: levels }, (_, i) => mkRow(bids[i], asks[i])).join('')}
+    ${Array.from({ length: levels }, (_, i) => mkAskRow(asks[i])).join('')}
+    <div class="ba-dom-spr-row">${stepLabel ? `<span style="opacity:0.45;font-size:6.5px;margin-right:3px">${stepLabel}</span>` : ''}₹${spr.toFixed(2)}</div>
+    ${Array.from({ length: levels }, (_, i) => mkBidRow(bids[i])).join('')}
   `
 }
 
@@ -3122,10 +3124,12 @@ function _updateBaOverlays() {
       bids: aggBids, asks: aggAsks, levels,
     }
 
-    // Panel height: header + rows; middle row anchored at current price Y
+    // Panel height: header + ask rows + spread row + bid rows
     const hdrH   = 36
-    const panelH = hdrH + levels * rowH
-    const midRowCenter = hdrH + Math.floor(levels / 2) * rowH + rowH / 2
+    const sprH   = 18
+    const panelH = hdrH + levels * rowH + sprH + levels * rowH
+    // Anchor so the spread row sits at the current mid price Y
+    const midRowCenter = hdrH + levels * rowH + sprH / 2
     let   top    = midY - midRowCenter
     top          = Math.max(0, Math.min(rect.height - panelH, top))
     dp.style.top    = `${rect.top + top}px`
